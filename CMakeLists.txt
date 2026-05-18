@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build options
 option(BINARYLLM_BUILD_TESTS "Build tests" ON)
+option(BINARYLLM_BUILD_APPS  "Build demo apps" ON)
 
 # Warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -43,4 +44,9 @@ add_subdirectory(src/binarycore)
 if(BINARYLLM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/binarycore)
+endif()
+
+# Apps
+if(BINARYLLM_BUILD_APPS)
+    add_subdirectory(apps)
 endif()
