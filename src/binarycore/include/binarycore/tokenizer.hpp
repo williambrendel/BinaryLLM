@@ -17,12 +17,12 @@ namespace binarycore {
 // only `encoded` is used.
 // ============================================================================
 struct Token {
-    uint64_t    encoded;    // 64-bit binary encoding
-    std::string text;       // original source text (empty for synthetic symbols
-                            // like paragraph_break)
+  uint64_t encoded; // 64-bit binary encoding
+  std::string text; // original source text (empty for synthetic symbols
+                    // like paragraph_break)
 
-    bool is_word() const noexcept { return binarycore::is_word(encoded); }
-    bool is_symbol() const noexcept { return binarycore::is_symbol(encoded); }
+  bool is_word() const noexcept { return binarycore::is_word(encoded); }
+  bool is_symbol() const noexcept { return binarycore::is_symbol(encoded); }
 };
 
 // ============================================================================
