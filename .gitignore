@@ -1,0 +1,147 @@
+# ============================================================================
+# Build outputs
+# ============================================================================
+build/
+out/
+cmake-build-*/
+
+# Compiled artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.app/
+
+# ============================================================================
+# CMake
+# ============================================================================
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+Testing/
+
+# ============================================================================
+# VS Code workspace state (KEEP config, exclude state)
+# ============================================================================
+.vscode/.browse.*
+.vscode/ipch/
+.vscode/.cache/
+.vscode/chrome/
+
+# clangd index
+.cache/
+.clangd/
+
+# ============================================================================
+# IDE / editor noise
+# ============================================================================
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# JetBrains
+.idea/
+*.iml
+
+# Sublime
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+.\#*
+
+# ============================================================================
+# macOS noise
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+
+# ============================================================================
+# Linux noise
+# ============================================================================
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# ============================================================================
+# Windows noise
+# ============================================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================================================
+# Project-specific
+# ============================================================================
+# Corpora and datasets — usually large, often have their own licensing.
+# Document in data/README.md where to download them.
+data/corpora/*.txt
+data/corpora/*.zip
+data/corpora/*.gz
+data/svm_datasets/
+!data/corpora/.gitkeep
+!data/svm_datasets/.gitkeep
+!data/README.md
+
+# Benchmark outputs
+benchmark_results/
+*.bench.json
+
+# Generated docs
+docs/_build/
+docs/html/
+
+# Logs
+*.log
+*.tmp
+
+# Local environment / secrets (just in case)
+.env
+.env.local
+secrets/
+
+# Python (if/when we add Python tooling)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node (if/when we add JS tooling)
+node_modules/
+package-lock.json
+yarn.lock
+
+# WASM build outputs
+*.wasm
+*.wat
+bindings/wasm/build/

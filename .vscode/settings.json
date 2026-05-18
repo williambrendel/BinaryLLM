@@ -1,0 +1,10 @@
+{
+  "cmake.configureOnOpen": true,
+  "cmake.useCMakePresets": "always",
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "editor.formatOnSave": true,
+  "files.associations": {
+    "*.hpp": "cpp",
+    "*.h": "cpp"
+  }
+}
