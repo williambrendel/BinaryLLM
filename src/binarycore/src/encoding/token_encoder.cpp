@@ -216,40 +216,50 @@ TokenVec encode_symbol(bits::Symbol s) noexcept {
 //
 // Map a single character to a known symbol enum, falling back to Unknown.
 // ===========================================================================
-TokenVec encode_symbol_char(char c) noexcept {
-  switch (c) {
-    case '.':  return encode_symbol(bits::Symbol::Period);
-    case ',':  return encode_symbol(bits::Symbol::Comma);
-    case '!':  return encode_symbol(bits::Symbol::Exclamation);
-    case '?':  return encode_symbol(bits::Symbol::Question);
-    case ';':  return encode_symbol(bits::Symbol::Semicolon);
-    case ':':  return encode_symbol(bits::Symbol::Colon);
-    case '\'': return encode_symbol(bits::Symbol::Apostrophe);
-    case '"':  return encode_symbol(bits::Symbol::Quote);
-    case '(':  return encode_symbol(bits::Symbol::LParen);
-    case ')':  return encode_symbol(bits::Symbol::RParen);
-    case '[':  return encode_symbol(bits::Symbol::LBracket);
-    case ']':  return encode_symbol(bits::Symbol::RBracket);
-    case '{':  return encode_symbol(bits::Symbol::LBrace);
-    case '}':  return encode_symbol(bits::Symbol::RBrace);
-    case '/':  return encode_symbol(bits::Symbol::Slash);
-    case '\\': return encode_symbol(bits::Symbol::Backslash);
-    case '-':  return encode_symbol(bits::Symbol::Hyphen);
-    case '_':  return encode_symbol(bits::Symbol::Underscore);
-    case '@':  return encode_symbol(bits::Symbol::At);
-    case '$':  return encode_symbol(bits::Symbol::Dollar);
-    case '&':  return encode_symbol(bits::Symbol::Ampersand);
-    case '#':  return encode_symbol(bits::Symbol::Hash);
-    case '+':  return encode_symbol(bits::Symbol::Plus);
-    case '*':  return encode_symbol(bits::Symbol::Asterisk);
-    case '~':  return encode_symbol(bits::Symbol::Tilde);
-    case '>':  return encode_symbol(bits::Symbol::Greater);
-    case '<':  return encode_symbol(bits::Symbol::Less);
-    case '=':  return encode_symbol(bits::Symbol::Equals);
-    case '%':  return encode_symbol(bits::Symbol::Percent);
-    case '|':  return encode_symbol(bits::Symbol::Pipe);
-    default:   return encode_symbol(bits::Symbol::Unknown);
+// 256-entry LUT mapping ASCII chars to symbol ids. Built at compile time
+// so the runtime path is one array read, no branching.
+namespace {
+
+struct SymbolTable {
+  uint8_t id[256];   // bits::Symbol value (cast to uint8_t)
+};
+
+constexpr SymbolTable build_symbol_table() {
+  SymbolTable t{};
+  for (int i = 0; i < 256; ++i) {
+    t.id[i] = static_cast<uint8_t>(bits::Symbol::Unknown);
   }
+  struct E { char c; bits::Symbol s; };
+  constexpr E entries[] = {
+    {'.',  bits::Symbol::Period},      {',',  bits::Symbol::Comma},
+    {'!',  bits::Symbol::Exclamation}, {'?',  bits::Symbol::Question},
+    {';',  bits::Symbol::Semicolon},   {':',  bits::Symbol::Colon},
+    {'\'', bits::Symbol::Apostrophe},  {'"',  bits::Symbol::Quote},
+    {'(',  bits::Symbol::LParen},      {')',  bits::Symbol::RParen},
+    {'[',  bits::Symbol::LBracket},    {']',  bits::Symbol::RBracket},
+    {'{',  bits::Symbol::LBrace},      {'}',  bits::Symbol::RBrace},
+    {'/',  bits::Symbol::Slash},       {'\\', bits::Symbol::Backslash},
+    {'-',  bits::Symbol::Hyphen},      {'_',  bits::Symbol::Underscore},
+    {'@',  bits::Symbol::At},          {'$',  bits::Symbol::Dollar},
+    {'&',  bits::Symbol::Ampersand},   {'#',  bits::Symbol::Hash},
+    {'+',  bits::Symbol::Plus},        {'*',  bits::Symbol::Asterisk},
+    {'~',  bits::Symbol::Tilde},       {'>',  bits::Symbol::Greater},
+    {'<',  bits::Symbol::Less},        {'=',  bits::Symbol::Equals},
+    {'%',  bits::Symbol::Percent},     {'|',  bits::Symbol::Pipe},
+  };
+  for (auto& e : entries) {
+    t.id[static_cast<unsigned char>(e.c)] = static_cast<uint8_t>(e.s);
+  }
+  return t;
+}
+
+constexpr SymbolTable kSymbolTable = build_symbol_table();
+
+}  // namespace
+
+TokenVec encode_symbol_char(char c) noexcept {
+  const auto id = kSymbolTable.id[static_cast<unsigned char>(c)];
+  return encode_symbol(static_cast<bits::Symbol>(id));
 }
 
 }  // namespace binarycore
