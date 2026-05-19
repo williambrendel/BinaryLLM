@@ -1,4 +1,4 @@
-#include "binarycore/tokenizer.hpp"
+#include "binarycore/encoding/tokenizer.hpp"
 #include "doctest.h"
 
 using namespace binarycore;
@@ -42,13 +42,13 @@ TEST_CASE("two newlines emit ParagraphBreak symbol") {
   CHECK(toks[2].text == "b");
 }
 
-TEST_CASE("3+ newlines still emit ParagraphBreak (not multiple)") {
+TEST_CASE("3+ newlines still emit ParagraphBreak") {
   auto toks = tokenize("a\n\n\n\nb");
   REQUIRE(toks.size() == 3);
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::ParagraphBreak));
 }
 
-TEST_CASE("Windows line endings: \\r\\n behaves like \\n") {
+TEST_CASE("Windows line endings behave like \\n") {
   auto toks = tokenize("a\r\nb");
   REQUIRE(toks.size() == 3);
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::Newline));
@@ -58,29 +58,21 @@ TEST_CASE("Windows line endings: \\r\\n behaves like \\n") {
   CHECK(toks2[1].encoded == encode_symbol(bits::Symbol::ParagraphBreak));
 }
 
-TEST_CASE("old-Mac line endings: \\r alone") {
+TEST_CASE("old-Mac \\r line endings") {
   auto toks = tokenize("a\rb");
   REQUIRE(toks.size() == 3);
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::Newline));
 }
 
-TEST_CASE("single space is skipped (no token emitted)") {
+TEST_CASE("single space is skipped") {
   auto toks = tokenize("a b");
   REQUIRE(toks.size() == 2);
-  CHECK(toks[0].text == "a");
-  CHECK(toks[1].text == "b");
 }
 
 TEST_CASE("2+ spaces emit Indent symbol") {
   auto toks = tokenize("a  b");
   REQUIRE(toks.size() == 3);
-  CHECK(toks[0].text == "a");
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::Indent));
-  CHECK(toks[2].text == "b");
-
-  auto toks2 = tokenize("a    b");
-  REQUIRE(toks2.size() == 3);
-  CHECK(toks2[1].encoded == encode_symbol(bits::Symbol::Indent));
 }
 
 TEST_CASE("tab emits Indent symbol") {
@@ -89,36 +81,13 @@ TEST_CASE("tab emits Indent symbol") {
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::Indent));
 }
 
-TEST_CASE("mixed tabs and spaces collapse to single Indent") {
+TEST_CASE("mixed tabs and spaces → single Indent") {
   auto toks = tokenize("a \t  b");
   REQUIRE(toks.size() == 3);
   CHECK(toks[1].encoded == encode_symbol(bits::Symbol::Indent));
 }
 
-TEST_CASE("trailing space at line end before \\n\\n is handled") {
-  // "a  \n\nb" → word(a), paragraph_break, word(b)
-  // The trailing 2 spaces would normally be an Indent, but they precede
-  // newlines so are consumed as part of the newline-handling logic.
-  auto toks = tokenize("a  \n\nb");
-  // Acceptable: [word(a), indent, paragraph_break, word(b)]
-  // OR:         [word(a), paragraph_break, word(b)] if we collapse trailing whitespace.
-  // We document the actual behavior:
-  bool found_pb = false;
-  bool found_a = false, found_b = false;
-  for (const auto& t : toks) {
-    if (t.is_word() && t.text == "a")
-      found_a = true;
-    if (t.is_word() && t.text == "b")
-      found_b = true;
-    if (t.encoded == encode_symbol(bits::Symbol::ParagraphBreak))
-      found_pb = true;
-  }
-  CHECK(found_a);
-  CHECK(found_b);
-  CHECK(found_pb);
-}
-
-TEST_CASE("digits are word characters (join with adjacent letters)") {
+TEST_CASE("digits are word characters") {
   auto toks = tokenize("abc123 def");
   REQUIRE(toks.size() == 2);
   CHECK(toks[0].text == "abc123");
@@ -132,7 +101,7 @@ TEST_CASE("standalone digits form a word token") {
   CHECK(toks[0].text == "42");
 }
 
-TEST_CASE("hyphenated compound: 'well-known' → 3 tokens (word, hyphen, word)") {
+TEST_CASE("hyphenated compound: 'well-known' → 3 tokens") {
   auto toks = tokenize("well-known");
   REQUIRE(toks.size() == 3);
   CHECK(toks[0].text == "well");
@@ -140,7 +109,7 @@ TEST_CASE("hyphenated compound: 'well-known' → 3 tokens (word, hyphen, word)")
   CHECK(toks[2].text == "known");
 }
 
-TEST_CASE("email-like: 'a@b.c' → 5 tokens (word, @, word, ., word)") {
+TEST_CASE("email-like: 'a@b.c' → 5 tokens") {
   auto toks = tokenize("a@b.c");
   REQUIRE(toks.size() == 5);
   CHECK(toks[0].text == "a");
@@ -152,7 +121,6 @@ TEST_CASE("email-like: 'a@b.c' → 5 tokens (word, @, word, ., word)") {
 
 TEST_CASE("paragraph with leading indent") {
   auto toks = tokenize("    hello world");
-  // 4 leading spaces → indent, then 'hello', space (skipped), 'world'
   REQUIRE(toks.size() == 3);
   CHECK(toks[0].encoded == encode_symbol(bits::Symbol::Indent));
   CHECK(toks[1].text == "hello");

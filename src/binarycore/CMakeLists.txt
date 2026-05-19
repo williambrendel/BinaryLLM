@@ -1,6 +1,6 @@
 add_library(binarycore STATIC
-    src/token_encoder.cpp
-    src/tokenizer.cpp
+    src/encoding/token_encoder.cpp
+    src/encoding/tokenizer.cpp
 )
 
 target_include_directories(binarycore PUBLIC

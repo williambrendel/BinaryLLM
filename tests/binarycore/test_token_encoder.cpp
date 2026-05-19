@@ -1,9 +1,9 @@
-#include "binarycore/token_encoder.hpp"
+#include "binarycore/encoding/token_encoder.hpp"
+#include "binarycore/math/hamming.hpp"
 #include "doctest.h"
 
 using namespace binarycore;
 
-// Helper to extract bitfield value from encoded token.
 static uint64_t get_field(uint64_t token, int start, int width) {
   uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
   return (token >> start) & mask;
@@ -20,22 +20,16 @@ TEST_CASE("type flag distinguishes words from symbols") {
   CHECK(is_symbol(s));
   CHECK_FALSE(is_word(s));
 
-  // Type flag forces large hamming between any word and any symbol.
-  BinaryVec64 wv = to_vec(w);
-  BinaryVec64 sv = to_vec(s);
-  CHECK(wv.hamming(sv) >= 1);
+  CHECK(hamming(to_vec(w), to_vec(s)) >= 1);
 }
 
 TEST_CASE("letter presence: 'cat' sets c, a, t and no others") {
   uint64_t t = encode_word("cat");
-  // c=2, a=0, t=19
-  CHECK(get_bit(t, bits::LetterPresenceStart + 0));  // a
-  CHECK(get_bit(t, bits::LetterPresenceStart + 2));  // c
-  CHECK(get_bit(t, bits::LetterPresenceStart + 19)); // t
-  // Other letters not set
+  CHECK(get_bit(t, bits::LetterPresenceStart + 0));   // a
+  CHECK(get_bit(t, bits::LetterPresenceStart + 2));   // c
+  CHECK(get_bit(t, bits::LetterPresenceStart + 19));  // t
   for (int i = 0; i < 26; ++i) {
-    if (i == 0 || i == 2 || i == 19)
-      continue;
+    if (i == 0 || i == 2 || i == 19) continue;
     CHECK_FALSE(get_bit(t, bits::LetterPresenceStart + i));
   }
 }
@@ -46,9 +40,9 @@ TEST_CASE("letter presence is case-insensitive") {
 }
 
 TEST_CASE("first letter field captures first alphabetic character") {
-  CHECK(get_field(encode_word("cat"), bits::FirstLetterStart, 5) == 2);    // c
-  CHECK(get_field(encode_word("apple"), bits::FirstLetterStart, 5) == 0);  // a
-  CHECK(get_field(encode_word("Zebra"), bits::FirstLetterStart, 5) == 25); // z
+  CHECK(get_field(encode_word("cat"), bits::FirstLetterStart, 5) == 2);
+  CHECK(get_field(encode_word("apple"), bits::FirstLetterStart, 5) == 0);
+  CHECK(get_field(encode_word("Zebra"), bits::FirstLetterStart, 5) == 25);
 }
 
 TEST_CASE("capitalization classification") {
@@ -65,7 +59,6 @@ TEST_CASE("capitalization classification") {
 TEST_CASE("length bucket") {
   CHECK(get_field(encode_word("a"), bits::LengthBucketStart, 4) == 1);
   CHECK(get_field(encode_word("hello"), bits::LengthBucketStart, 4) == 5);
-  // 16+ chars all clamp to 15
   CHECK(get_field(encode_word("aaaaaaaaaaaaaaaa"), bits::LengthBucketStart, 4) == 15);
   CHECK(get_field(encode_word("aaaaaaaaaaaaaaaaaaaaa"), bits::LengthBucketStart, 4) == 15);
 }
@@ -79,16 +72,15 @@ TEST_CASE("digit presence") {
 }
 
 TEST_CASE("vowel doubles") {
-  CHECK(get_bit(encode_word("book"), bits::VowelDoublesStart + 3));     // oo
-  CHECK(get_bit(encode_word("feel"), bits::VowelDoublesStart + 1));     // ee
-  CHECK(get_bit(encode_word("aardvark"), bits::VowelDoublesStart + 0)); // aa
+  CHECK(get_bit(encode_word("book"), bits::VowelDoublesStart + 3));      // oo
+  CHECK(get_bit(encode_word("feel"), bits::VowelDoublesStart + 1));      // ee
+  CHECK(get_bit(encode_word("aardvark"), bits::VowelDoublesStart + 0));  // aa
   CHECK_FALSE(get_bit(encode_word("cat"), bits::VowelDoublesStart + 0));
 }
 
 TEST_CASE("consonant doubles") {
-  // 'll' is index 0 in the consonant-double table
-  CHECK(get_bit(encode_word("hello"), bits::ConsonantDoublesStart + 0));  // ll
-  CHECK(get_bit(encode_word("better"), bits::ConsonantDoublesStart + 3)); // tt
+  CHECK(get_bit(encode_word("hello"), bits::ConsonantDoublesStart + 0));   // ll
+  CHECK(get_bit(encode_word("better"), bits::ConsonantDoublesStart + 3));  // tt
   CHECK_FALSE(get_bit(encode_word("cat"), bits::ConsonantDoublesStart + 0));
 }
 
@@ -104,14 +96,12 @@ TEST_CASE("encoding is deterministic (same string → same token)") {
 }
 
 TEST_CASE("morphological variants are close in Hamming distance") {
-  // The encoding was designed so plurals, conjugations etc. have small distance.
   auto h = [](const char* a, const char* b) {
-    return to_vec(encode_word(a)).hamming(to_vec(encode_word(b)));
+    return hamming(to_vec(encode_word(a)), to_vec(encode_word(b)));
   };
   CHECK(h("book", "books") <= 4);
   CHECK(h("run", "running") <= 6);
   CHECK(h("walk", "walked") <= 6);
-  // Semantically distant words → larger distance
   CHECK(h("cat", "philosophy") >= 10);
 }
 
@@ -127,7 +117,6 @@ TEST_CASE("encode_symbol_char maps common characters correctly") {
   CHECK(encode_symbol_char(',') == encode_symbol(bits::Symbol::Comma));
   CHECK(encode_symbol_char('@') == encode_symbol(bits::Symbol::At));
   CHECK(encode_symbol_char('$') == encode_symbol(bits::Symbol::Dollar));
-  // Unmapped character → Unknown
   CHECK(encode_symbol_char('\x01') == encode_symbol(bits::Symbol::Unknown));
 }
 

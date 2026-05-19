@@ -4,19 +4,15 @@
 //   - total word tokens
 //   - unique encodings
 //   - collision count and rate
-//   - top-N collision groups (which distinct words share an encoding)
+//   - top-N collision groups
 //
 // Usage:
 //   encode_corpus <path>                       Default: top-20 collisions
 //   encode_corpus <path> --top N               Show top-N collisions
 //   encode_corpus <path> --top N --quiet       Suppress per-group printout
-//
-// We treat upper/lowercase as separate words for collision counting because the
-// encoder's capitalization bits preserve the distinction (HELLO vs hello vs Hello
-// have different encodings — that's a feature, not a collision).
 
-#include "binarycore/token_encoder.hpp"
-#include "binarycore/tokenizer.hpp"
+#include "binarycore/encoding/token_encoder.hpp"
+#include "binarycore/encoding/tokenizer.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -25,7 +21,6 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -48,8 +43,7 @@ bool parse_args(int argc, char** argv, Args& out) {
     std::string a = argv[i];
     if (a == "--top" && i + 1 < argc) {
       out.top_n = std::atoi(argv[++i]);
-      if (out.top_n < 0)
-        out.top_n = 0;
+      if (out.top_n < 0) out.top_n = 0;
     } else if (a == "--quiet") {
       out.quiet = true;
     } else {
@@ -71,20 +65,15 @@ std::string slurp(const std::string& path) {
   return ss.str();
 }
 
-} // namespace
+}  // namespace
 
 int main(int argc, char** argv) {
   Args args;
-  if (!parse_args(argc, argv, args))
-    return 1;
+  if (!parse_args(argc, argv, args)) return 1;
 
   const std::string text = slurp(args.path);
-
-  // Tokenize the entire file at once.
   auto tokens = binarycore::tokenize(text);
 
-  // Bucket distinct word *texts* by their encoded value.
-  // map[encoding] -> set of distinct strings that produced it
   std::unordered_map<uint64_t, std::unordered_set<std::string>> by_encoding;
   by_encoding.reserve(tokens.size() / 4);
 
@@ -100,10 +89,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Count collisions: an encoding is "colliding" iff it covers more than one
-  // distinct source string.
   std::size_t colliding_encodings = 0;
-  std::size_t colliding_words = 0; // total distinct strings inside collisions
+  std::size_t colliding_words = 0;
   for (const auto& [enc, strings] : by_encoding) {
     if (strings.size() > 1) {
       ++colliding_encodings;
@@ -114,49 +101,42 @@ int main(int argc, char** argv) {
   const std::size_t unique_encodings = by_encoding.size();
   const std::size_t unique_strings = [&] {
     std::size_t s = 0;
-    for (const auto& [_, strings] : by_encoding)
-      s += strings.size();
+    for (const auto& [_, strings] : by_encoding) s += strings.size();
     return s;
   }();
 
-  // ---- Report ----
   std::cout << "Corpus:                " << args.path << "\n";
-  std::cout << "Bytes read:            " << text.size() << "\n";
-  std::cout << "\n";
+  std::cout << "Bytes read:            " << text.size() << "\n\n";
   std::cout << "Total tokens:          " << tokens.size() << "\n";
   std::cout << "  word tokens:         " << total_word_tokens << "\n";
-  std::cout << "  symbol tokens:       " << total_symbol_tokens << "\n";
-  std::cout << "\n";
+  std::cout << "  symbol tokens:       " << total_symbol_tokens << "\n\n";
   std::cout << "Distinct word strings: " << unique_strings << "\n";
   std::cout << "Distinct encodings:    " << unique_encodings << "\n";
 
   if (unique_strings > 0) {
-    const double collision_rate = 100.0 * static_cast<double>(unique_strings - unique_encodings) /
-                                  static_cast<double>(unique_strings);
-    std::cout << "Colliding encodings:   " << colliding_encodings << "  (" << colliding_words
-              << " distinct strings affected)\n";
-    std::cout << "Collision rate:        " << collision_rate << "%  "
-              << "  (= (distinct_strings - distinct_encodings) / distinct_strings)\n";
+    const double collision_rate =
+        100.0 * static_cast<double>(unique_strings - unique_encodings) /
+        static_cast<double>(unique_strings);
+    std::cout << "Colliding encodings:   " << colliding_encodings << "  ("
+              << colliding_words << " distinct strings affected)\n";
+    std::cout << "Collision rate:        " << collision_rate
+              << "%    (= (distinct_strings - distinct_encodings) / distinct_strings)\n";
   }
 
-  // ---- Top-N collision groups ----
   if (args.top_n > 0 && !args.quiet) {
-    // Build a list of (group_size, sample_strings) for groups with >1 member.
     std::vector<std::pair<std::size_t, std::vector<std::string>>> groups;
     groups.reserve(colliding_encodings);
     for (const auto& [enc, strings] : by_encoding) {
-      if (strings.size() <= 1)
-        continue;
+      if (strings.size() <= 1) continue;
       std::vector<std::string> v(strings.begin(), strings.end());
       std::sort(v.begin(), v.end());
       groups.emplace_back(v.size(), std::move(v));
     }
-    // Largest groups first.
     std::sort(groups.begin(), groups.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    const std::size_t to_show =
-        std::min<std::size_t>(static_cast<std::size_t>(args.top_n), groups.size());
+    const std::size_t to_show = std::min<std::size_t>(
+        static_cast<std::size_t>(args.top_n), groups.size());
 
     if (to_show > 0) {
       std::cout << "\nTop " << to_show << " collision groups (largest first):\n";

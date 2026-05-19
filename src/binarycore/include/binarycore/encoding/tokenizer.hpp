@@ -1,6 +1,6 @@
 #pragma once
 
-#include "token_encoder.hpp"
+#include "binarycore/encoding/token_encoder.hpp"
 
 #include <cstdint>
 #include <string>
@@ -17,9 +17,9 @@ namespace binarycore {
 // only `encoded` is used.
 // ============================================================================
 struct Token {
-  uint64_t encoded; // 64-bit binary encoding
-  std::string text; // original source text (empty for synthetic symbols
-                    // like paragraph_break)
+  uint64_t encoded;   // 64-bit binary encoding
+  std::string text;   // original source text (empty for synthetic symbols
+                      // like paragraph_break)
 
   bool is_word() const noexcept { return binarycore::is_word(encoded); }
   bool is_symbol() const noexcept { return binarycore::is_symbol(encoded); }
@@ -37,4 +37,4 @@ struct Token {
 // ============================================================================
 std::vector<Token> tokenize(std::string_view input);
 
-} // namespace binarycore
+}  // namespace binarycore
