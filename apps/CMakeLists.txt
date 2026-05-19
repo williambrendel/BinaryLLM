@@ -1,1 +1,2 @@
 add_subdirectory(encode_corpus)
+add_subdirectory(test_typo_hamming)
