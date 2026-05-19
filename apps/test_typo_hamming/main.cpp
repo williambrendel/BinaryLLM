@@ -17,12 +17,9 @@
 
 using namespace binarycore;
 
-static int popcount64(uint64_t x) {
-  return __builtin_popcountll(x);
-}
 
-static int hamming(uint64_t a, uint64_t b) {
-  return popcount64(a ^ b);
+static int hamming(TokenVec a, TokenVec b) {
+  return __builtin_popcountll(a.data[0] ^ b.data[0]);
 }
 
 // Apply a typo of given type at a random position. Returns modified string.
@@ -131,7 +128,7 @@ int main(int argc, char** argv) {
   Stats sub, trans, ins, del;
   for (int i = 0; i < n; ++i) {
     const auto& w = words[i];
-    uint64_t enc = encode_word(w);
+    TokenVec enc = encode_word(w);
 
     {
       auto v = apply_substitution(w, rng);

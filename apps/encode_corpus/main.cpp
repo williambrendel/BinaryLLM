@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
   for (const auto& t : tokens) {
     if (t.is_word()) {
       ++total_word_tokens;
-      by_encoding[t.encoded].insert(t.text);
+      by_encoding[t.encoded.data[0]].insert(t.text);
     } else {
       ++total_symbol_tokens;
     }
