@@ -2,7 +2,7 @@
 // binaryoptim/src/dominant_set.cpp
 //
 // Replicator dynamics implementation of the gamma-scaled dominant-set solver.
-// See dominant_set.hpp for the math.
+// See dominant_set.hpp for the math and API tiers.
 // ============================================================================
 
 #include "binaryoptim/dominant_set.hpp"
@@ -10,134 +10,227 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
+#include <vector>
 
 namespace binaryoptim {
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Initialize alpha buffer following the auto-detection rule documented in
+// the header:
+//   - all-zero (or non-positive sum) -> uniform gamma/N
+//   - otherwise                       -> clamp negatives to 0, then rescale
+// Optional jitter in [0, epsilon) per entry is added before the final
+// rescale to gamma.
+// ---------------------------------------------------------------------------
+template <typename T>
+void init_alpha(T* alpha, std::size_t N, T gamma,
+                T init_epsilon, std::uint64_t seed) {
+  // 1. Compute sum of non-negative entries; clamp negatives in place.
+  T sum_pos = T{};
+  for (std::size_t i = 0; i < N; ++i) {
+    if (alpha[i] < T{}) alpha[i] = T{};
+    sum_pos += alpha[i];
+  }
+
+  // 2. If empty / all-zero, fall back to uniform.
+  if (!(sum_pos > T{})) {
+    const T u = gamma / static_cast<T>(N);
+    for (std::size_t i = 0; i < N; ++i) alpha[i] = u;
+  }
+
+  // 3. Optional jitter.
+  if (init_epsilon > T{}) {
+    std::mt19937_64 rng(seed);
+    std::uniform_real_distribution<T> dist(T{}, init_epsilon);
+    for (std::size_t i = 0; i < N; ++i) alpha[i] += dist(rng);
+  }
+
+  // 4. Final rescale to sum = gamma.
+  T total = T{};
+  for (std::size_t i = 0; i < N; ++i) total += alpha[i];
+  if (total > T{}) {
+    const T s = gamma / total;
+    for (std::size_t i = 0; i < N; ++i) alpha[i] *= s;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build M = A - diag(beta) + kappa * 11^T, where kappa = max(beta).
+// Off-diagonal: M[i,j] = A[i,j] + kappa
+// Diagonal:     M[i,i] = kappa - beta[i]   (>= 0 by choice of kappa)
+// The kappa * 11^T shift is a constant on the gamma-simplex (it adds
+// kappa * gamma^2 to the objective) and therefore preserves the argmax.
+// ---------------------------------------------------------------------------
+template <typename T>
+void build_M(const T* A, const T* beta, std::size_t N, T* M) {
+  T kappa = T{};
+  for (std::size_t i = 0; i < N; ++i) {
+    if (beta[i] > kappa) kappa = beta[i];
+  }
+  for (std::size_t i = 0; i < N; ++i) {
+    M[i * N + i] = kappa - beta[i];                  // diagonal
+    for (std::size_t j = i + 1; j < N; ++j) {
+      const T off = A[i * N + j] + kappa;
+      M[i * N + j] = off;
+      M[j * N + i] = off;                            // symmetric
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Core replicator loop. alpha is assumed already initialized and on the
+// gamma-simplex. M is assumed already built.
+// ---------------------------------------------------------------------------
+template <typename T>
+DominantSetStats replicator_loop(
+    const T* M, const T* b,
+    std::size_t N,
+    T* alpha, T* M_alpha,
+    const DominantSetOptions<T>& opts) {
+
+  DominantSetStats stats{};
+  const T gamma = opts.gamma;
+
+  std::size_t iter = 0;
+  for (; iter < opts.max_iter; ++iter) {
+
+    // M * alpha (exploit symmetry: each off-diagonal entry touched once).
+    for (std::size_t i = 0; i < N; ++i) M_alpha[i] = T{};
+    for (std::size_t i = 0; i < N; ++i) {
+      const std::size_t row = i * N;
+      const T alpha_i = alpha[i];
+      M_alpha[i] += M[row + i] * alpha_i;
+      for (std::size_t j = i + 1; j < N; ++j) {
+        const T m = M[row + j];
+        M_alpha[i] += m * alpha[j];
+        M_alpha[j] += m * alpha_i;
+      }
+    }
+
+    // Denominator Z = alpha^T (M alpha + b).
+    T denom = T{};
+    for (std::size_t i = 0; i < N; ++i) {
+      denom += alpha[i] * (M_alpha[i] + b[i]);
+    }
+    if (!(denom > T{})) break;  // degenerate; stop with current alpha
+
+    // Replicator update + L-inf change tracking + sum tracking.
+    T max_delta = T{};
+    T new_sum = T{};
+    for (std::size_t i = 0; i < N; ++i) {
+      const T a_new = alpha[i] * (M_alpha[i] + b[i]) / denom * gamma;
+      const T d = std::abs(a_new - alpha[i]);
+      if (d > max_delta) max_delta = d;
+      alpha[i] = a_new;
+      new_sum += a_new;
+    }
+
+    // Rescale to absorb numerical drift back to sum = gamma.
+    if (new_sum > T{}) {
+      const T scale = gamma / new_sum;
+      for (std::size_t i = 0; i < N; ++i) alpha[i] *= scale;
+    }
+
+    if (max_delta < opts.tol) {
+      ++iter;
+      stats.converged = true;
+      break;
+    }
+  }
+
+  stats.iterations = iter;
+  return stats;
+}
+
+}  // namespace
+
+// ============================================================================
+// Pointer-based control form.
+// ============================================================================
+template <typename T>
+DominantSetStats dominant_set(
+    const T* A, const T* b, const T* beta,
+    std::size_t N,
+    T* alpha_inout,
+    DominantSetWorkspace<T> ws,
+    const DominantSetOptions<T>& opts) {
+
+  if (N == 0 || alpha_inout == nullptr) {
+    return DominantSetStats{};
+  }
+
+  // Allocate any workspace buffers the caller didn't supply.
+  std::vector<T> owned_M;
+  std::vector<T> owned_Malpha;
+  T* M = ws.M;
+  T* M_alpha = ws.M_alpha;
+  if (M == nullptr) {
+    owned_M.assign(N * N, T{});
+    M = owned_M.data();
+  }
+  if (M_alpha == nullptr) {
+    owned_Malpha.assign(N, T{});
+    M_alpha = owned_Malpha.data();
+  }
+
+  // Initialize alpha (auto-detect uniform vs provided; optional jitter).
+  init_alpha<T>(alpha_inout, N, opts.gamma, opts.init_epsilon, opts.seed);
+
+  // Build M from A and beta.
+  build_M<T>(A, beta, N, M);
+
+  // Run replicator.
+  return replicator_loop<T>(M, b, N, alpha_inout, M_alpha, opts);
+}
+
+// ============================================================================
+// Span-based convenience form.
+// ============================================================================
 template <typename T>
 DominantSetResult<T> dominant_set(
-    const T* A,
-    const T* b,
-    const T* beta,
+    std::span<const T> A,
+    std::span<const T> b,
+    std::span<const T> beta,
     std::size_t N,
     const DominantSetOptions<T>& opts) {
 
   DominantSetResult<T> result;
   result.alpha.assign(N, T{});
-  result.iterations = 0;
-  result.converged = false;
-
   if (N == 0) return result;
 
-  const T gamma = opts.gamma;
+  // Defer to the pointer form; let it own the workspace internally.
+  const DominantSetStats stats = dominant_set<T>(
+      A.data(), b.data(), beta.data(),
+      N,
+      result.alpha.data(),
+      DominantSetWorkspace<T>{},
+      opts);
 
-  // -------------------------------------------------------------------------
-  // Build M = A - diag(beta) + kappa * 11^T.
-  //   - kappa = max(beta) guarantees the diagonal kappa - beta[i] >= 0.
-  //   - Adding kappa to every off-diagonal entry guarantees M >= 0 entrywise
-  //     when A >= 0 (which is the regime the caller is expected to supply,
-  //     e.g. a Hamming-derived affinity matrix).
-  //   - The kappa * 11^T term is a constant on the simplex (rank-1 shift by
-  //     a multiple of (sum alpha)^2 = gamma^2) so the argmax is preserved.
-  //
-  // M is stored as its own buffer because:
-  //   - A's diagonal is ignored by the problem statement, and we need a
-  //     diagonal that depends on beta.
-  //   - We add kappa to every off-diagonal entry once, instead of inside
-  //     the inner loop on each iteration.
-  // -------------------------------------------------------------------------
-  T kappa = T{};
-  for (std::size_t i = 0; i < N; ++i) {
-    if (beta[i] > kappa) kappa = beta[i];
-  }
-
-  std::vector<T> M(N * N);
-  for (std::size_t i = 0; i < N; ++i) {
-    M[i * N + i] = kappa - beta[i];                  // diagonal
-    for (std::size_t j = i + 1; j < N; ++j) {
-      const T off = A[i * N + j] + kappa;            // off-diagonal (symmetric)
-      M[i * N + j] = off;
-      M[j * N + i] = off;
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Initialize alpha to the uniform distribution on the gamma-simplex.
-  // -------------------------------------------------------------------------
-  const T init = gamma / static_cast<T>(N);
-  for (std::size_t i = 0; i < N; ++i) result.alpha[i] = init;
-
-  std::vector<T> M_alpha(N, T{});
-
-  // -------------------------------------------------------------------------
-  // Replicator iteration.
-  //   alpha_i  <-  alpha_i * ((M alpha)_i + b_i) / Z
-  //   Z = sum_i alpha_i * ((M alpha)_i + b_i)
-  // and rescale to enforce sum alpha = gamma after each step.
-  //
-  // The Mα loop exploits symmetry of M: each off-diagonal entry M[i,j] is
-  // touched once and contributes alpha[j] to M_alpha[i] and alpha[i] to
-  // M_alpha[j], cutting work in half.
-  // -------------------------------------------------------------------------
-  std::size_t iter = 0;
-  for (; iter < opts.max_iter; ++iter) {
-
-    // Compute M_alpha exploiting symmetry.
-    std::fill(M_alpha.begin(), M_alpha.end(), T{});
-    for (std::size_t i = 0; i < N; ++i) {
-      const std::size_t row = i * N;
-      const T alpha_i = result.alpha[i];
-      M_alpha[i] += M[row + i] * alpha_i;            // diagonal
-      for (std::size_t j = i + 1; j < N; ++j) {
-        const T m = M[row + j];
-        M_alpha[i] += m * result.alpha[j];
-        M_alpha[j] += m * alpha_i;
-      }
-    }
-
-    // Compute denominator Z = alpha^T (M alpha + b).
-    T denom = T{};
-    for (std::size_t i = 0; i < N; ++i) {
-      denom += result.alpha[i] * (M_alpha[i] + b[i]);
-    }
-    if (!(denom > T{})) break;   // degenerate; stop and keep current alpha
-
-    // Apply replicator update and track L-infinity change.
-    // We update in place. Note: the standard update preserves
-    // sum(alpha) = (current sum), so after this loop the sum is still
-    // approximately gamma. We rescale explicitly below to remove drift.
-    T max_delta = T{};
-    T new_sum = T{};
-    for (std::size_t i = 0; i < N; ++i) {
-      const T a_new = result.alpha[i] * (M_alpha[i] + b[i]) / denom * gamma;
-      const T d = std::abs(a_new - result.alpha[i]);
-      if (d > max_delta) max_delta = d;
-      result.alpha[i] = a_new;
-      new_sum += a_new;
-    }
-
-    // Rescale to exactly gamma to absorb numerical drift over many iters.
-    if (new_sum > T{} && std::abs(new_sum - gamma) > static_cast<T>(0)) {
-      const T scale = gamma / new_sum;
-      for (std::size_t i = 0; i < N; ++i) result.alpha[i] *= scale;
-    }
-
-    if (max_delta < opts.tol) {
-      ++iter;
-      result.converged = true;
-      break;
-    }
-  }
-
-  result.iterations = iter;
+  result.iterations = stats.iterations;
+  result.converged  = stats.converged;
   return result;
 }
 
-// Explicit instantiations.
-template DominantSetResult<float>  dominant_set<float>(
+// ---------------------------------------------------------------------------
+// Explicit instantiations (float, double).
+// ---------------------------------------------------------------------------
+template DominantSetStats dominant_set<float>(
     const float*, const float*, const float*, std::size_t,
+    float*, DominantSetWorkspace<float>,
     const DominantSetOptions<float>&);
-template DominantSetResult<double> dominant_set<double>(
+template DominantSetStats dominant_set<double>(
     const double*, const double*, const double*, std::size_t,
+    double*, DominantSetWorkspace<double>,
     const DominantSetOptions<double>&);
+
+template DominantSetResult<float> dominant_set<float>(
+    std::span<const float>, std::span<const float>, std::span<const float>,
+    std::size_t, const DominantSetOptions<float>&);
+template DominantSetResult<double> dominant_set<double>(
+    std::span<const double>, std::span<const double>, std::span<const double>,
+    std::size_t, const DominantSetOptions<double>&);
 
 }  // namespace binaryoptim
