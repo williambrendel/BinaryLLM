@@ -3,155 +3,219 @@
 // ============================================================================
 // binaryoptim/thresholds.hpp
 //
-// Standalone threshold / extraction utilities for distributions on the
-// simplex (typically the alpha vector returned by dominant_set).
+// Adaptive cut primitives for sorted-descending sequences.
 //
-// All functions here are pure: they take an alpha vector and return either
-// a scalar threshold value or a set of indices. They do NOT modify the
-// input and do not depend on any solver state. Caller composes them with
-// dominant_set however it wants.
+// Architecture:
 //
-// Two families:
+//   Four small utilities, each computing one signal:
 //
-//   1. Adaptive thresholds (data-driven cutoffs).
-//      - log_ratio_gap_threshold(alpha, min_log_gap)
-//          Cut at the largest gap in log(alpha_i / alpha_{i+1}) that is at
-//          least min_log_gap. Captures the "elbow" of a sorted distribution.
-//      - entropy_threshold(alpha)
-//          Keep ceil(exp(H)) candidates, where H is the Shannon entropy of
-//          the normalized alpha distribution. Effective support size.
+//     entropy_effective_count    — perplexity-based effective count
+//     gap_ratio_effective_count  — sharpest qualifying log-ratio cliff
+//     elbow_effective_count      — chord-distance argmax with significance
+//                                  gate vs the median (robust to noise)
+//     scaled_mm_effective_count  — factor times median-mass position,
+//                                  saturating at n (slope-aware fallback)
 //
-//   2. Fixed-k extraction.
-//      - top_k_indices(alpha, k)
-//          Return the indices of the k largest alpha values, sorted by
-//          alpha descending. Useful for the embedder use case where we
-//          want a fixed sparsity level independent of distribution shape.
+//   One composite — the canonical adaptive prune for V-code attention:
+//
+//     adaptive_prune_count       — cascade: elbow first, scaled_mm fallback
+//     adaptive_prune_threshold   — value form of the above
+//
+// The two old "rolled-into-one" cascades (entropy+ratio for the previous
+// adaptive_prune, and elbow+scaled_mm for the short-lived elbow_prune) no
+// longer exist as separate functions. Their building blocks are exposed as
+// utilities; the canonical adaptive prune is the elbow+scaled_mm cascade.
+// Anyone who wants the old entropy+ratio behavior can compose the two
+// utilities manually:
+//
+//     auto cap = entropy_effective_count(v);
+//     auto k   = gap_ratio_effective_count(v, 1.5, 1e-10, cap);
+//
+// Sorted-descending precondition. All functions assume the input is sorted
+// descending. The trailing-zero stop in entropy and the noise-floor stop in
+// gap_ratio rely on it. Violating the precondition produces mathematically
+// valid output but generally meaningless cuts.
+//
+// Convention. Every count function returns k in [0, n] meaning "keep the
+// first k elements". A return of n means "keep all" (no cut). A return of
+// 0 means "drop everything" (only happens for empty or all-nonpositive
+// input).
+//
+// Defaults — referenced by name so callers don't sprinkle magic numbers:
+//   - kRatioMinGap    = 1.5        (gap_ratio_effective_count)
+//   - kRatioEps       = 1e-10      (gap_ratio_effective_count)
+//   - kElbowSig       = 0.01       (elbow_effective_count)
+//   - kMMFactor       = 2.2        (scaled_mm_effective_count)
+//   - kNoMaxCutIndex  = SIZE_MAX   (no cap)
 // ============================================================================
 
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
-#include <numeric>
+#include <cstdint>
+#include <span>
 #include <vector>
 
 namespace binaryoptim {
 
-// ---------------------------------------------------------------------------
-// log_ratio_gap_threshold
+// Defaults — referenced by name from call sites.
+inline constexpr double kRatioMinGap = 1.5;
+inline constexpr double kRatioEps = 1e-10;
+inline constexpr double kElbowSig = 0.01;
+inline constexpr double kMMFactor = 2.2;
+inline constexpr std::size_t kNoMaxCutIndex = static_cast<std::size_t>(-1);
+
+// =============================================================================
+// Utilities — each computes one signal independently.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// entropy_effective_count
 //
-// Sort alpha descending, examine consecutive log-ratios log(a_i / a_{i+1}),
-// pick the largest gap that exceeds min_log_gap. Return alpha[i+1] as the
-// threshold — i.e. keep everything strictly above it.
+// Returns k = ceil(exp(H)) where H is the Shannon entropy of values in
+// `sorted_desc[0..min(n, max_cut_index))` interpreted as an unnormalized
+// probability mass. Stops at the first non-positive value.
 //
-// If no gap exceeds min_log_gap, return 0 (caller falls back to whatever
-// static floor they have).
-// ---------------------------------------------------------------------------
-template <typename T>
-T log_ratio_gap_threshold(const T* alpha, std::size_t n, T min_log_gap) {
-  if (n == 0) return T{};
-
-  // Copy + sort descending.
-  std::vector<T> sorted(alpha, alpha + n);
-  std::sort(sorted.begin(), sorted.end(), std::greater<T>());
-
-  // Walk gaps. Skip non-positive entries (log undefined).
-  T best_gap = T{};
-  std::size_t best_idx = n;  // index of the larger element of the best pair
-  for (std::size_t i = 0; i + 1 < n; ++i) {
-    const T a = sorted[i];
-    const T b = sorted[i + 1];
-    if (a <= T{} || b <= T{}) break;
-    const T gap = std::log(a) - std::log(b);
-    if (gap > best_gap) {
-      best_gap = gap;
-      best_idx = i;
-    }
-  }
-
-  if (best_gap < min_log_gap) return T{};
-  return sorted[best_idx + 1];
-}
-
-template <typename T>
-inline T log_ratio_gap_threshold(const std::vector<T>& alpha, T min_log_gap) {
-  return log_ratio_gap_threshold<T>(alpha.data(), alpha.size(), min_log_gap);
-}
-
-// ---------------------------------------------------------------------------
-// entropy_threshold
+// Captures the "broad shape" of the distribution: a delta returns 1, a
+// uniform over k items returns k.
 //
-// Compute Shannon entropy H = -sum_i p_i log p_i over the normalized
-// distribution p_i = alpha_i / sum(alpha). The "effective support size" is
-// exp(H); we keep the top ceil(exp(H)) entries. Return the alpha value of
-// the (k+1)-th largest entry as the threshold (i.e. keep entries strictly
-// above it).
+// Returns 0 only if the input is empty or contains only non-positive values.
+// Otherwise returns a value in [1, l] where l is the count of positive
+// values examined.
+// -----------------------------------------------------------------------------
+std::size_t entropy_effective_count(
+    std::span<const double> sorted_desc,
+    std::size_t max_cut_index = kNoMaxCutIndex) noexcept;
+
+// -----------------------------------------------------------------------------
+// gap_ratio_effective_count
 //
-// If sum(alpha) is non-positive or n == 0, return 0.
-// ---------------------------------------------------------------------------
-template <typename T>
-T entropy_threshold(const T* alpha, std::size_t n) {
-  if (n == 0) return T{};
-  T sum = T{};
-  for (std::size_t i = 0; i < n; ++i) {
-    if (alpha[i] > T{}) sum += alpha[i];
-  }
-  if (!(sum > T{})) return T{};
-
-  T H = T{};
-  for (std::size_t i = 0; i < n; ++i) {
-    if (alpha[i] > T{}) {
-      const T p = alpha[i] / sum;
-      H -= p * std::log(p);
-    }
-  }
-
-  std::size_t k = static_cast<std::size_t>(std::ceil(std::exp(H)));
-  if (k == 0) k = 1;
-  if (k >= n) return T{};
-
-  // Sort descending, return the (k)-th largest (zero-indexed → element k-1
-  // is the smallest we keep; element k is the largest we drop).
-  std::vector<T> sorted(alpha, alpha + n);
-  std::nth_element(sorted.begin(), sorted.begin() + k, sorted.end(),
-                   std::greater<T>());
-  return sorted[k];
-}
-
-template <typename T>
-inline T entropy_threshold(const std::vector<T>& alpha) {
-  return entropy_threshold<T>(alpha.data(), alpha.size());
-}
-
-// ---------------------------------------------------------------------------
-// top_k_indices
+// Walks consecutive pairs in `sorted_desc[0..min(n, max_cut_index))`,
+// finds the steepest ratio prev/curr that clears `min_gap`, and reports
+// the index at which that cliff sits. Stops at the first value <= eps
+// (noise floor). When no qualifying cliff is found, returns the
+// noise-floor stop position.
 //
-// Return the indices of the k largest entries of alpha, sorted by alpha
-// descending. Stable for ties only insofar as std::sort is stable on
-// equal keys (i.e. not stable; if you need deterministic tie-breaking,
-// pre-perturb your alpha values).
-// ---------------------------------------------------------------------------
-template <typename T>
-std::vector<std::size_t> top_k_indices(const T* alpha, std::size_t n,
-                                       std::size_t k) {
-  if (k > n) k = n;
+// Strict `>` on the running max-gap means ties resolve in favor of the
+// earlier (higher-up) cliff.
+//
+// Was named `ratio_effective_count` in earlier versions. The new name
+// matches the other utilities (X_effective_count) and clarifies that
+// "gap" refers to ratios between consecutive values.
+//
+// Returns:
+//   - 0 if the input is empty
+//   - n if n < 2 (no pair to compare)
+//   - otherwise a value in [1, min(n, max_cut_index)]
+// -----------------------------------------------------------------------------
+std::size_t gap_ratio_effective_count(
+    std::span<const double> sorted_desc,
+    double min_gap = kRatioMinGap,
+    double eps = kRatioEps,
+    std::size_t max_cut_index = kNoMaxCutIndex) noexcept;
 
-  std::vector<std::size_t> idx(n);
-  std::iota(idx.begin(), idx.end(), std::size_t{0});
+// -----------------------------------------------------------------------------
+// elbow_effective_count
+//
+// Geometric kneedle: computes the chord from (0, v[0]) to (n-1, v[n-1])
+// and returns the interior position that maximizes the chord-to-curve
+// distance, provided the distance is significant.
+//
+// Significance gate: the elbow distance must exceed `sig * median(v)`.
+// Median is taken from the sorted-descending input in O(1). Using
+// median (not mean and not y-range) makes the gate robust both to
+// peak outliers (which inflate mean) and to noise-only distributions
+// (which collapse y-range).
+//
+// Returns:
+//   - n if n < 3 (degenerate)
+//   - n if the input is flat (v[0] - v[n-1] <= epsilon)
+//   - n if no significant elbow is found (chord curvature insufficient)
+//   - the elbow position in [1, n-1] otherwise
+//
+// The "return n on no elbow" convention matches the other utilities —
+// the caller can detect "no cut" by comparing the result to n.
+// -----------------------------------------------------------------------------
+std::size_t elbow_effective_count(
+    std::span<const double> sorted_desc,
+    double sig = kElbowSig) noexcept;
 
-  // Partial sort by alpha descending.
-  std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
-                    [alpha](std::size_t a, std::size_t b) {
-                      return alpha[a] > alpha[b];
-                    });
+// -----------------------------------------------------------------------------
+// scaled_mm_effective_count
+//
+// Returns min(ceil(factor * median_mass(v)), n) where median_mass is
+// the smallest k such that the cumulative sum of v[0..k) reaches half
+// the total. Saturates at n.
+//
+// Slope-aware: for steep linear decays, mass concentrates in the head,
+// median_mass is small, so the cut is sparse. For shallow decays mass
+// spreads out, median_mass approaches n/2, so the result saturates at
+// n (no cut). Factor 2.2 puts the saturation boundary at MM = n/2.2,
+// which covers all linear slopes <= 25% of the y-range.
+//
+// Returns:
+//   - n if input is empty or all-zero (total mass is zero -> no cut)
+//   - otherwise a value in [1, n]
+// -----------------------------------------------------------------------------
+std::size_t scaled_mm_effective_count(
+    std::span<const double> sorted_desc,
+    double factor = kMMFactor) noexcept;
 
-  idx.resize(k);
-  return idx;
-}
+// =============================================================================
+// Composite — the canonical adaptive prune.
+// =============================================================================
 
-template <typename T>
-inline std::vector<std::size_t> top_k_indices(const std::vector<T>& alpha,
-                                              std::size_t k) {
-  return top_k_indices<T>(alpha.data(), alpha.size(), k);
-}
+// -----------------------------------------------------------------------------
+// adaptive_prune_count
+//
+// Cascade:
+//   1. k = elbow_effective_count(v, sig);
+//      If k < n (significant elbow), return k.
+//   2. Else, return scaled_mm_effective_count(v, factor).
+//
+// This is the recommended cut for V-code attention substrates and any
+// setting where a single data-derived break is desired without external
+// caps. Catches:
+//   - sharp cliffs at any position (elbow path)
+//   - power-law / exponential natural elbows (elbow path)
+//   - linear decays via slope-aware MM fallback
+//   - uniform / near-uniform via saturation to n
+// -----------------------------------------------------------------------------
+std::size_t adaptive_prune_count(
+    std::span<const double> sorted_desc,
+    double sig = kElbowSig,
+    double factor = kMMFactor) noexcept;
+
+// -----------------------------------------------------------------------------
+// adaptive_prune_threshold
+//
+// Value form: returns the boundary value at position k =
+// adaptive_prune_count(...). If k == n (no cut), returns 0.0; otherwise
+// returns sorted_desc[k] (the first dropped value).
+// -----------------------------------------------------------------------------
+double adaptive_prune_threshold(
+    std::span<const double> sorted_desc,
+    double sig = kElbowSig,
+    double factor = kMMFactor) noexcept;
+
+// =============================================================================
+// Unsorted-input convenience adapters. These sort internally before
+// delegating. Use the sorted primitives above for performance-critical
+// paths.
+// =============================================================================
+
+// Returns indices into `values` for the top-k largest values, in
+// descending order. Stable on ties. If k > n, returns all n indices.
+// If k == 0 or `values` is empty, returns empty.
+std::vector<std::size_t> top_k_indices(
+    std::span<const double> values,
+    std::size_t k);
+
+// Value form of entropy_effective_count on unsorted input.
+double entropy_threshold(std::span<const double> values);
+
+// Value form of gap_ratio_effective_count on unsorted input. Input is
+// the natural log of the minimum gap, i.e. min_gap = exp(min_log_gap).
+double log_ratio_gap_threshold(
+    std::span<const double> values,
+    double min_log_gap) noexcept(false);
 
 }  // namespace binaryoptim

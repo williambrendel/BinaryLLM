@@ -40,12 +40,14 @@ target_include_directories(doctest INTERFACE
 # Project libraries
 add_subdirectory(src/binarycore)
 add_subdirectory(src/binaryoptim)
+add_subdirectory(src/binarytrain)
 
 # Tests
 if(BINARYLLM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/binarycore)
     add_subdirectory(tests/binaryoptim)
+    add_subdirectory(tests/binarytrain)
 endif()
 
 # Apps

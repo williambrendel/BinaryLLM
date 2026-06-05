@@ -1,5 +1,6 @@
 add_library(binaryoptim STATIC
   src/dominant_set.cpp
+  src/thresholds.cpp
 )
 
 target_include_directories(binaryoptim PUBLIC include)

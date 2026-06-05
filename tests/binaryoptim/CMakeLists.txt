@@ -1,6 +1,8 @@
 add_executable(binaryoptim_tests
     main.cpp
     test_dominant_set.cpp
+    test_thresholds.cpp
+    test_adaptive_prune.cpp
 )
 
 target_link_libraries(binaryoptim_tests PRIVATE

@@ -7,6 +7,7 @@ add_executable(binarycore_tests
     test_similarity.cpp
     test_token_encoder.cpp
     test_tokenizer.cpp
+    sparse/test_sparse.cpp
 )
 
 target_link_libraries(binarycore_tests PRIVATE

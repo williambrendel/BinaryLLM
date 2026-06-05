@@ -1,2 +1,4 @@
 add_subdirectory(encode_corpus)
 add_subdirectory(test_typo_hamming)
+add_subdirectory(phase1_extract)
+add_subdirectory(phase2_signatures)
