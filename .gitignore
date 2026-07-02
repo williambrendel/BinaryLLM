@@ -112,6 +112,10 @@ data/svm_datasets/
 !data/svm_datasets/.gitkeep
 !data/README.md
 
+# Generated training artifacts (produced by phase1_extract / build_candidates)
+data/*.cnd3
+data/dict_combined.*
+
 # Benchmark outputs
 benchmark_results/
 *.bench.json
