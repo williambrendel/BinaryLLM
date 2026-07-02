@@ -1,5 +1,7 @@
 add_subdirectory(adaptive_threshold)
 add_subdirectory(binary_vec)
+add_subdirectory(math)
 add_subdirectory(parts)
 add_subdirectory(signatures)
+add_subdirectory(sketch)
 add_subdirectory(sparse)
