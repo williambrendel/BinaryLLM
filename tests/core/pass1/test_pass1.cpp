@@ -77,6 +77,65 @@ TEST_CASE("Pass1Learner: seed+stream recovers covering atoms") {
   }
 }
 
+namespace {
+
+// Total pairwise mask overlap Σ_{j<k} popcount(φ_j ∩ φ_k) across the codebook.
+long total_overlap(const core::codebook::Codebook& cb) {
+  long sum = 0;
+  for (std::size_t j = 0; j < cb.size(); ++j)
+    for (std::size_t k = j + 1; k < cb.size(); ++k) {
+      const auto& a = cb.atom(j);
+      const auto& b = cb.atom(k);
+      std::size_t ia = 0, ib = 0;
+      while (ia < a.size() && ib < b.size()) {
+        if (a[ia] < b[ib]) ++ia;
+        else if (b[ib] < a[ia]) ++ib;
+        else { ++sum; ++ia; ++ib; }
+      }
+    }
+  return sum;
+}
+
+// 20 patterns sharing a common hub {0,1,2,3} plus 3 distinct bits each.
+std::vector<Signature> make_hub_patterns() {
+  std::vector<Signature> pats;
+  for (std::uint32_t p = 0; p < 20; ++p)
+    pats.push_back({0, 1, 2, 3, 10u + p, 40u + p, 70u + p});
+  return pats;
+}
+
+core::codebook::Codebook learn_hub(double lambda) {
+  const auto pats = make_hub_patterns();
+  const std::vector<std::uint32_t> weights(kDim, 3);
+  FrequentDirections fd(kDim, 32);
+  for (const auto& p : pats) fd.add(to_vec(p));
+  fd.finalize();
+
+  Pass1Learner::Config cfg;
+  cfg.K = 20;
+  cfg.D = 8;
+  cfg.refresh_every = 100000;  // no mid-stream refresh → finalize sees full counts
+  cfg.decay = 1.0;
+  cfg.lambda = lambda;
+  Pass1Learner l(kDim, weights, cfg);
+  l.seed(fd, pats);
+  for (int rep = 0; rep < 30; ++rep)
+    for (const auto& p : pats) l.observe(p);
+  l.finalize();
+  return l.codebook();
+}
+
+}  // namespace
+
+TEST_CASE("Pass1Learner: incoherence penalty lowers pairwise overlap") {
+  // Without separation, every atom keeps the shared hub → high overlap.
+  const long overlap_off = total_overlap(learn_hub(0.0));
+  // With a strong penalty, the congested hub bits get spread out / dropped.
+  const long overlap_on = total_overlap(learn_hub(2.0));
+  CHECK(overlap_off > 0);
+  CHECK(overlap_on < overlap_off / 2);  // substantially lower-degree overlap
+}
+
 TEST_CASE("Pass1Learner: deterministic under a fixed seed") {
   const auto pats = make_patterns();
   const std::vector<std::uint32_t> weights(kDim, 3);

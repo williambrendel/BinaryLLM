@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <unordered_set>
 #include <utility>
 
 namespace core::pass1 {
@@ -116,10 +117,30 @@ void Pass1Learner::observe(const Signature& sig) {
   if (cfg_.refresh_every != 0 && seen_ % cfg_.refresh_every == 0) refresh();
 }
 
-void Pass1Learner::refresh_atom_(std::size_t k) {
+void Pass1Learner::refresh_atom_(std::size_t k,
+                                 const std::vector<std::uint32_t>& bit_degree) {
   const auto& b = acc_[k];
   if (b.empty()) return;
-  std::vector<std::pair<std::uint32_t, double>> items(b.begin(), b.end());
+
+  // congestion(e) = other atoms already holding bit e (snapshot minus self).
+  const core::codebook::Atom& cur = cb_.atom(k);
+  const std::unordered_set<std::uint32_t> own(cur.begin(), cur.end());
+
+  // score(e) = b_k[e] − λ·congestion(e)·w_e ; keep the top-D positive scores.
+  std::vector<std::pair<std::uint32_t, double>> items;  // (pos, score)
+  items.reserve(b.size());
+  for (const auto& [e, mass] : b) {
+    std::uint32_t cong = (e < bit_degree.size()) ? bit_degree[e] : 0;
+    if (own.count(e)) cong -= 1;  // don't count k against itself
+    const double score =
+        mass - cfg_.lambda * static_cast<double>(cong) *
+                   static_cast<double>(weights_[e]);
+    if (score > 0.0) items.emplace_back(e, score);
+  }
+  if (items.empty()) {
+    cb_.set(k, {});  // fully congested → emptied (dead; re-seed handles later)
+    return;
+  }
   const std::size_t take = std::min<std::size_t>(items.size(), cfg_.D);
   std::partial_sort(items.begin(), items.begin() + take, items.end(),
                     [](const auto& a, const auto& b2) {
@@ -133,11 +154,19 @@ void Pass1Learner::refresh_atom_(std::size_t k) {
   cb_.set(k, std::move(atom));
 }
 
-void Pass1Learner::refresh() {
+void Pass1Learner::apply_refresh_(bool do_decay) {
+  // Snapshot per-bit atom degree BEFORE updating any atom, so the incoherence
+  // penalty is consistent across the round (order-independent).
+  std::vector<std::uint32_t> bit_degree(dim_, 0);
+  for (std::size_t k = 0; k < cb_.size(); ++k)
+    for (std::uint32_t e : cb_.atom(k))
+      if (e < dim_) ++bit_degree[e];
+
   for (std::size_t k = 0; k < cfg_.K; ++k)
-    if (nk_[k] > 0.0) refresh_atom_(k);
-  // Exponential-window forgetting so atoms track the recent stream; prune
-  // fully-decayed entries to keep the accumulators bounded.
+    if (nk_[k] > 0.0) refresh_atom_(k, bit_degree);
+
+  if (!do_decay) return;
+  // Exponential-window forgetting; prune fully-decayed entries to stay bounded.
   for (std::size_t k = 0; k < cfg_.K; ++k) {
     nk_[k] *= cfg_.decay;
     auto& b = acc_[k];
@@ -149,10 +178,9 @@ void Pass1Learner::refresh() {
   }
 }
 
-void Pass1Learner::finalize() {
-  for (std::size_t k = 0; k < cfg_.K; ++k)
-    if (nk_[k] > 0.0) refresh_atom_(k);
-}
+void Pass1Learner::refresh() { apply_refresh_(true); }
+
+void Pass1Learner::finalize() { apply_refresh_(false); }
 
 double Pass1Learner::utilization() const {
   std::size_t used = 0;

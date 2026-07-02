@@ -54,6 +54,12 @@ class Pass1Learner {
     std::uint32_t D = 256;            // max codeword width
     std::size_t refresh_every = 4096; // batch atom-refresh cadence
     double decay = 0.5;               // accumulator decay per refresh
+    // Incoherence (separation) weight. Realizes the spec's squared-overlap
+    // penalty as a per-bit congestion cost at refresh: a candidate bit's
+    // support must exceed λ·(number of other atoms already holding it), else
+    // it is dropped — spreading shared bits thin (low-degree overlap graph).
+    // Tied to α (co-tune); 0 disables separation. See spec §4.1/§7.1.
+    double lambda = 0.5;
     core::codebook::PursuitConfig pursuit{};
     std::uint64_t rng_seed = 0x9E3779B97F4A7C15ULL;
   };
@@ -83,7 +89,10 @@ class Pass1Learner {
   double mean_recall(const std::vector<Signature>& sigs) const;
 
  private:
-  void refresh_atom_(std::size_t k);
+  // Recompute every non-dead atom from its accumulator, penalizing bit
+  // congestion (incoherence). do_decay applies exponential forgetting after.
+  void apply_refresh_(bool do_decay);
+  void refresh_atom_(std::size_t k, const std::vector<std::uint32_t>& bit_degree);
 
   std::size_t dim_;
   std::vector<std::uint32_t> weights_;
