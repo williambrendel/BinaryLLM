@@ -1,2 +1,0 @@
-add_executable(test_typo_hamming main.cpp)
-target_link_libraries(test_typo_hamming PRIVATE binarycore)

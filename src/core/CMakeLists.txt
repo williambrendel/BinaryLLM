@@ -1,0 +1,4 @@
+add_subdirectory(adaptive_threshold)
+add_subdirectory(binary_vec)
+add_subdirectory(parts)
+add_subdirectory(signatures)
