@@ -136,6 +136,84 @@ TEST_CASE("Pass1Learner: incoherence penalty lowers pairwise overlap") {
   CHECK(overlap_on < overlap_off / 2);  // substantially lower-degree overlap
 }
 
+namespace {
+
+std::size_t atoms_with_bit(const core::codebook::Codebook& cb,
+                           std::uint32_t bit) {
+  std::size_t n = 0;
+  for (std::size_t k = 0; k < cb.size(); ++k) {
+    const auto& a = cb.atom(k);
+    if (std::find(a.begin(), a.end(), bit) != a.end()) ++n;
+  }
+  return n;
+}
+
+// 20 patterns that all share the hub bit 0 (in every signature → dominant FD
+// direction), plus two distinct bits each.
+std::vector<Signature> make_hubbed() {
+  std::vector<Signature> pats;
+  for (std::uint32_t p = 0; p < 20; ++p) pats.push_back({0, 10u + p, 30u + p});
+  return pats;
+}
+
+core::codebook::Codebook learn_hubbed(double strip_fraction) {
+  const auto pats = make_hubbed();
+  const std::vector<std::uint32_t> weights(kDim, 3);
+  FrequentDirections fd(kDim, 32);
+  for (const auto& p : pats) fd.add(to_vec(p));
+  fd.finalize();
+
+  Pass1Learner::Config cfg;
+  cfg.K = 20;
+  cfg.D = 8;
+  cfg.refresh_every = 100;
+  cfg.lambda = 0.0;  // isolate hub-stripping from the incoherence penalty
+  Pass1Learner l(kDim, weights, cfg);
+  if (strip_fraction > 0.0) l.strip_hubs(fd, strip_fraction);
+  l.seed(fd, pats);
+  for (int rep = 0; rep < 30; ++rep)
+    for (const auto& p : pats) l.observe(p);
+  l.finalize();
+  return l.codebook();
+}
+
+}  // namespace
+
+TEST_CASE("Pass1Learner: hub-stripping removes the diffuse hub bit") {
+  // Without stripping (and with separation off) the hub bit is in atoms.
+  CHECK(atoms_with_bit(learn_hubbed(0.0), 0) > 0);
+  // Stripping the most-promiscuous bits excludes the hub from every codeword.
+  CHECK(atoms_with_bit(learn_hubbed(0.05), 0) == 0);
+}
+
+TEST_CASE("Pass1Learner: re-seed revives dead codewords, raising recall") {
+  const auto pats = make_patterns();  // 40 disjoint patterns
+  const std::vector<std::uint32_t> weights(kDim, 3);
+  FrequentDirections fd(kDim, 64);
+  for (const auto& p : pats) fd.add(to_vec(p));
+  fd.finalize();
+
+  auto train = [&](std::size_t reseed_cap) {
+    Pass1Learner::Config cfg;
+    cfg.K = 40;
+    cfg.D = 8;
+    cfg.refresh_every = 40;
+    cfg.reseed_pool_cap = reseed_cap;  // 0 disables re-seed
+    Pass1Learner l(kDim, weights, cfg);
+    // Seed only the first 28 patterns → atoms 28..39 start dead.
+    std::vector<Signature> partial(pats.begin(), pats.begin() + 28);
+    l.seed(fd, partial);
+    for (int rep = 0; rep < 40; ++rep)
+      for (const auto& p : pats) l.observe(p);  // stream ALL 40
+    l.finalize();
+    return l.mean_recall(pats);
+  };
+
+  const double recall_no_reseed = train(0);
+  const double recall_reseed = train(4096);
+  CHECK(recall_reseed > recall_no_reseed + 0.1);
+}
+
 TEST_CASE("Pass1Learner: deterministic under a fixed seed") {
   const auto pats = make_patterns();
   const std::vector<std::uint32_t> weights(kDim, 3);

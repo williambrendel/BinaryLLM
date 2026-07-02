@@ -20,11 +20,15 @@ constexpr std::size_t kChunk =
     binarycore::binary_vec::BigSparseBinaryVecDynamic::chunk_size;
 
 // The D bits of `sig` with the highest surprisal weight (ties by position),
-// returned sorted ascending.
+// excluding stripped hub bits; returned sorted ascending.
 core::codebook::Atom top_d_by_weight(const Signature& sig,
                                      const std::vector<std::uint32_t>& w,
-                                     std::uint32_t D) {
-  core::codebook::Atom out = sig;
+                                     std::uint32_t D,
+                                     const std::vector<char>& stripped) {
+  core::codebook::Atom out;
+  out.reserve(sig.size());
+  for (std::uint32_t e : sig)
+    if (e >= stripped.size() || !stripped[e]) out.push_back(e);
   if (out.size() > D) {
     std::partial_sort(out.begin(), out.begin() + D, out.end(),
                       [&](std::uint32_t a, std::uint32_t b) {
@@ -58,8 +62,39 @@ Pass1Learner::Pass1Learner(std::size_t dim, std::vector<std::uint32_t> weights,
       cb_(dim, cfg.D),
       acc_(cfg.K),
       nk_(cfg.K, 0.0),
-      fired_ever_(cfg.K, 0) {
+      fired_ever_(cfg.K, 0),
+      stripped_(dim, 0) {
   for (std::size_t k = 0; k < cfg_.K; ++k) cb_.add({});  // K empty slots
+}
+
+void Pass1Learner::strip_hubs(const core::sketch::FrequentDirections& fd,
+                              double fraction) {
+  stripped_.assign(dim_, 0);
+  if (fraction <= 0.0 || fd.rank() == 0) return;
+  const std::vector<float>& factor = fd.factor();
+  const std::size_t rank = fd.rank();
+
+  // promiscuity(e) = fraction of bit e's FD energy in the top direction — high
+  // means e is part of the dominant "common" structure (a diffuse hub).
+  std::vector<std::pair<double, std::uint32_t>> pr;  // (promiscuity, bit)
+  pr.reserve(dim_);
+  for (std::size_t e = 0; e < dim_; ++e) {
+    double energy = 0.0;
+    for (std::size_t r = 0; r < rank; ++r) {
+      const double a = factor[r * dim_ + e];
+      energy += a * a;
+    }
+    if (energy <= 0.0) continue;
+    const double top = factor[e];  // row 0, column e
+    pr.emplace_back((top * top) / energy, static_cast<std::uint32_t>(e));
+  }
+  const std::size_t nstrip =
+      static_cast<std::size_t>(fraction * static_cast<double>(pr.size()));
+  std::partial_sort(pr.begin(), pr.begin() + std::min(nstrip, pr.size()),
+                    pr.end(),
+                    [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (std::size_t i = 0; i < nstrip && i < pr.size(); ++i)
+    stripped_[pr[i].second] = 1;
 }
 
 void Pass1Learner::seed(const core::sketch::FrequentDirections& fd,
@@ -102,7 +137,8 @@ void Pass1Learner::seed(const core::sketch::FrequentDirections& fd,
       keys.begin(), keys.begin() + take, keys.end(),
       [](const auto& a, const auto& b) { return a.first > b.first; });
   for (std::size_t t = 0; t < take; ++t)
-    cb_.set(t, top_d_by_weight(warmup[keys[t].second], weights_, cfg_.D));
+    cb_.set(t, top_d_by_weight(warmup[keys[t].second], weights_, cfg_.D,
+                               stripped_));
 }
 
 void Pass1Learner::observe(const Signature& sig) {
@@ -111,10 +147,50 @@ void Pass1Learner::observe(const Signature& sig) {
     nk_[k] += 1.0;
     fired_ever_[k] = 1;
     auto& b = acc_[k];
-    for (std::uint32_t e : sig) b[e] += static_cast<double>(weights_[e]);
+    for (std::uint32_t e : sig)
+      if (e >= stripped_.size() || !stripped_[e])
+        b[e] += static_cast<double>(weights_[e]);
   }
+
+  // Reservoir of under-covered signatures for re-seeding dead codewords: keep
+  // those the current dictionary reconstructs poorly (< half their info).
+  const std::uint32_t* w = weights_.data();
+  const double ic = static_cast<double>(
+      binarycore::sparse::info_content<std::uint32_t>(sig.data(), sig.size(), w));
+  if (ic > 0.0) {
+    const auto recon = cb_.decode(fired);
+    const double wd = static_cast<double>(
+        binarycore::sparse::weighted_dot<std::uint32_t>(
+            recon.data(), recon.size(), sig.data(), sig.size(), w));
+    if (wd * 2.0 < ic) {
+      if (reseed_pool_.size() < cfg_.reseed_pool_cap) {
+        reseed_pool_.push_back(sig);
+      } else if (!reseed_pool_.empty()) {
+        reseed_pool_[reseed_head_ % reseed_pool_.size()] = sig;  // ring-evict
+        ++reseed_head_;
+      }
+    }
+  }
+
   ++seen_;
   if (cfg_.refresh_every != 0 && seen_ % cfg_.refresh_every == 0) refresh();
+}
+
+void Pass1Learner::reseed_dead_() {
+  if (reseed_pool_.empty()) return;
+  for (std::size_t k = 0; k < cfg_.K; ++k) {
+    if (!cb_.atom(k).empty()) continue;  // only revive dead codewords
+    const Signature& s = reseed_pool_[reseed_head_ % reseed_pool_.size()];
+    ++reseed_head_;
+    core::codebook::Atom a = top_d_by_weight(s, weights_, cfg_.D, stripped_);
+    if (a.empty()) continue;
+    // Seed the accumulator so the revived atom survives the next refresh.
+    auto& b = acc_[k];
+    b.clear();
+    for (std::uint32_t e : a) b[e] = static_cast<double>(weights_[e]);
+    nk_[k] = 1.0;
+    cb_.set(k, std::move(a));
+  }
 }
 
 void Pass1Learner::refresh_atom_(std::size_t k,
@@ -164,6 +240,8 @@ void Pass1Learner::apply_refresh_(bool do_decay) {
 
   for (std::size_t k = 0; k < cfg_.K; ++k)
     if (nk_[k] > 0.0) refresh_atom_(k, bit_degree);
+
+  reseed_dead_();  // revive emptied / never-seeded codewords
 
   if (!do_decay) return;
   // Exponential-window forgetting; prune fully-decayed entries to stay bounded.
