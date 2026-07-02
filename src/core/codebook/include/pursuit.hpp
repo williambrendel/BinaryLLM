@@ -34,12 +34,13 @@ struct PursuitConfig {
   std::size_t max_fired = 32;    // budget on |fired|
 };
 
-// weights: per-3F-bit surprisal multiplicities (WGT1), size == codebook.dim().
+// weights: per-3F-bit surprisal multiplicities (WGT1), widened to uint32 so
+// full-signature info sums can't overflow; size == codebook.dim().
 // signature: sorted-unique 3F set positions. Returns fired atom ids, sorted.
 std::vector<std::uint32_t> pursuit_encode(
     const Codebook& cb,
     const std::vector<std::uint32_t>& signature,
-    const std::vector<std::uint16_t>& weights,
+    const std::vector<std::uint32_t>& weights,
     const PursuitConfig& cfg = {});
 
 }  // namespace core::codebook

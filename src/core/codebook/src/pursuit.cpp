@@ -16,12 +16,12 @@ namespace core::codebook {
 std::vector<std::uint32_t> pursuit_encode(
     const Codebook& cb,
     const std::vector<std::uint32_t>& signature,
-    const std::vector<std::uint16_t>& weights,
+    const std::vector<std::uint32_t>& weights,
     const PursuitConfig& cfg) {
   std::vector<std::uint32_t> fired;
   if (signature.empty() || cb.size() == 0) return fired;
 
-  const std::uint16_t* w = weights.data();
+  const std::uint32_t* w = weights.data();
 
   // info_content(φ_k), computed lazily and reused across iterations.
   std::vector<std::int64_t> ic_cache(cb.size(), -1);
@@ -29,7 +29,7 @@ std::vector<std::uint32_t> pursuit_encode(
     if (ic_cache[k] < 0) {
       const Atom& a = cb.atom(k);
       ic_cache[k] = static_cast<std::int64_t>(
-          binarycore::sparse::info_content<std::uint16_t>(a.data(), a.size(), w));
+          binarycore::sparse::info_content<std::uint32_t>(a.data(), a.size(), w));
     }
     return static_cast<std::uint64_t>(ic_cache[k]);
   };
@@ -60,7 +60,7 @@ std::vector<std::uint32_t> pursuit_encode(
       if (is_fired[k]) continue;
       const Atom& a = cb.atom(k);
       const std::uint64_t wdot =
-          binarycore::sparse::weighted_dot<std::uint16_t>(
+          binarycore::sparse::weighted_dot<std::uint32_t>(
               residual.data(), residual.size(), a.data(), a.size(), w);
       if (wdot == 0) continue;
       const std::uint64_t ic = ic_of(k);

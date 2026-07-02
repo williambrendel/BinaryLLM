@@ -19,8 +19,8 @@ using core::codebook::PursuitConfig;
 
 namespace {
 // Uniform weights → match reduces to plain containment |res∩φ| / |φ|.
-std::vector<std::uint16_t> ones(std::size_t dim) {
-  return std::vector<std::uint16_t>(dim, 1);
+std::vector<std::uint32_t> ones(std::size_t dim) {
+  return std::vector<std::uint32_t>(dim, 1);
 }
 }  // namespace
 
