@@ -3,6 +3,8 @@ add_executable(signatures_tests
   test_sentence_split.cpp
   test_paragraph_split.cpp
   test_word_encoder.cpp
+  test_candidate_file.cpp
+  test_weight_table.cpp
 )
 
 target_link_libraries(signatures_tests PRIVATE

@@ -4,6 +4,7 @@ add_library(signatures STATIC
   src/word_encoder.cpp
   src/encoder.cpp
   src/candidate_file.cpp
+  src/weight_table.cpp
 )
 
 target_include_directories(signatures PUBLIC
