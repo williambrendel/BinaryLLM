@@ -1,6 +1,7 @@
 add_executable(codebook_tests
   test_codebook.cpp
   test_pursuit.cpp
+  test_recon_metrics.cpp
 )
 
 target_link_libraries(codebook_tests PRIVATE

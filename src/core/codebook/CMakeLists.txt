@@ -8,6 +8,7 @@
 add_library(codebook STATIC
   src/codebook.cpp
   src/pursuit.cpp
+  src/recon_metrics.cpp
 )
 
 target_include_directories(codebook PUBLIC

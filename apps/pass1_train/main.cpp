@@ -14,6 +14,8 @@
 // ============================================================================
 
 #include "codebook.hpp"
+#include "recon_metrics.hpp"
+#include "pursuit.hpp"
 #include "dict_io.hpp"
 #include "dictionary.hpp"
 #include "encoder.hpp"
@@ -140,7 +142,7 @@ int main(int argc, char** argv) {
   cfg.K = K;
   cfg.D = D;
   cfg.lambda = lambda;
-  Pass1Learner learner(dim, std::move(weights), cfg);
+  Pass1Learner learner(dim, weights, cfg);  // keep `weights` for BER reporting
   if (strip > 0.0) learner.strip_hubs(fd, strip);
   learner.seed(fd, sigs);
   const auto t3 = Clock::now();
@@ -155,8 +157,26 @@ int main(int argc, char** argv) {
   if (!out.is_open()) { std::cerr << "cannot open " << out_path << "\n"; return 1; }
   learner.codebook().save(out);
 
+  // Block-wise reconstruction BER (§7.5.2): identity band C should reconstruct
+  // near-losslessly; L/R (OR-pooled context) are graded.
+  const auto& cb = learner.codebook();
+  const std::uint32_t Fw = static_cast<std::uint32_t>(dict.size());
+  double rL = 0, rC = 0, rR = 0, pC = 0;
+  std::size_t n = 0;
+  for (const auto& sig : sigs) {
+    if (sig.empty()) continue;
+    const auto fired = core::codebook::pursuit_encode(cb, sig, weights, cfg.pursuit);
+    const auto recon = cb.decode(fired);
+    const auto m = core::codebook::recon_metrics(recon, sig, weights, Fw);
+    rL += m.recall_L; rC += m.recall_C; rR += m.recall_R; pC += m.precision_C;
+    ++n;
+  }
+  if (n) { rL /= n; rC /= n; rR /= n; pC /= n; }
+
   std::cerr << "utilization: " << learner.utilization()
             << "  mean_recall: " << learner.mean_recall(sigs) << "\n";
+  std::cerr << "block recall  C=" << rC << " L=" << rL << " R=" << rR
+            << "   C precision=" << pC << "\n";
   std::cerr << "wrote " << out_path << "\n";
   return 0;
 }
