@@ -64,6 +64,14 @@ Pass1Learner::Pass1Learner(std::size_t dim, std::vector<std::uint32_t> weights,
       nk_(cfg.K, 0.0),
       fired_ever_(cfg.K, 0),
       stripped_(dim, 0) {
+  // Emphasize the C (identity) band so atoms cluster by identity, not by the
+  // denser L/R context (see Config::c_band_boost). C = [F, 2F), F = dim/3.
+  if (cfg_.c_band_boost > 1.0 && dim_ >= 3) {
+    const std::size_t F = dim_ / 3;
+    for (std::size_t e = F; e < 2 * F; ++e)
+      weights_[e] = static_cast<std::uint32_t>(
+          static_cast<double>(weights_[e]) * cfg_.c_band_boost);
+  }
   for (std::size_t k = 0; k < cfg_.K; ++k) cb_.add({});  // K empty slots
 }
 

@@ -214,6 +214,48 @@ TEST_CASE("Pass1Learner: re-seed revives dead codewords, raising recall") {
   CHECK(recall_reseed > recall_no_reseed + 0.1);
 }
 
+TEST_CASE("Pass1Learner: C-band boost keeps identity bits over dominant context") {
+  // dim=30, F=10 → C=[10,20). Every pattern shares a big low-weight context
+  // block {0..4} (L) but has a unique high-value C identity bit {10+p}. D=4,
+  // so an atom cannot hold both the whole context and the identity.
+  const std::size_t dim = 30;
+  std::vector<Signature> pats;
+  for (std::uint32_t p = 0; p < 10; ++p)
+    pats.push_back({0, 1, 2, 3, 4, 10u + p});
+  const std::vector<std::uint32_t> weights(dim, 1);
+
+  FrequentDirections fd(dim, 16);
+  for (const auto& p : pats) {
+    BigSparseBinaryVecDynamic v(dim);
+    for (std::uint32_t g : p) v.chunks[0].data.push_back(static_cast<std::uint16_t>(g));
+    fd.add(v);
+  }
+  fd.finalize();
+
+  auto count_identity_atoms = [&](double boost) {
+    Pass1Learner::Config cfg;
+    cfg.K = 10;
+    cfg.D = 4;
+    cfg.refresh_every = 50;
+    cfg.lambda = 0.0;
+    cfg.c_band_boost = boost;
+    Pass1Learner l(dim, weights, cfg);
+    l.seed(fd, pats);
+    for (int rep = 0; rep < 30; ++rep)
+      for (const auto& p : pats) l.observe(p);
+    l.finalize();
+    std::size_t with_c = 0;
+    for (std::size_t k = 0; k < l.codebook().size(); ++k)
+      for (std::uint32_t e : l.codebook().atom(k))
+        if (e >= 10 && e < 20) { ++with_c; break; }
+    return with_c;
+  };
+
+  // Without emphasis the shared context crowds out the identity bits; with a
+  // strong C boost, atoms retain them.
+  CHECK(count_identity_atoms(50.0) > count_identity_atoms(1.0));
+}
+
 TEST_CASE("Pass1Learner: deterministic under a fixed seed") {
   const auto pats = make_patterns();
   const std::vector<std::uint32_t> weights(kDim, 3);

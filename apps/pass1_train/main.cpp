@@ -26,6 +26,7 @@
 #include "weight_table.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -84,6 +85,9 @@ int main(int argc, char** argv) {
   std::size_t K = 8192, ell = 256;
   std::uint32_t D = 256;
   double strip = 0.0, lambda = 0.5;
+  std::uint32_t alpha_num = 9, alpha_den = 10;
+  std::size_t max_fired = 32;
+  double cboost = 1.0;  // multiply C-band (identity) weights to emphasize it
   for (int i = 4; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() { return std::string(argv[++i]); };
@@ -92,6 +96,12 @@ int main(int argc, char** argv) {
     else if (a == "--ell") ell = std::stoul(next());
     else if (a == "--strip") strip = std::stod(next());
     else if (a == "--lambda") lambda = std::stod(next());
+    else if (a == "--alpha") {
+      alpha_num = static_cast<std::uint32_t>(std::lround(std::stod(next()) * 10000.0));
+      alpha_den = 10000;
+    }
+    else if (a == "--maxfired") max_fired = std::stoul(next());
+    else if (a == "--cboost") cboost = std::stod(next());
     else corpora.push_back(a);
   }
 
@@ -142,6 +152,13 @@ int main(int argc, char** argv) {
   cfg.K = K;
   cfg.D = D;
   cfg.lambda = lambda;
+  cfg.c_band_boost = cboost;
+  cfg.pursuit.alpha_num = alpha_num;
+  cfg.pursuit.alpha_den = alpha_den;
+  cfg.pursuit.max_fired = max_fired;
+  std::cerr << "alpha=" << (double(alpha_num) / alpha_den)
+            << " maxfired=" << max_fired << " lambda=" << lambda
+            << " strip=" << strip << "\n";
   Pass1Learner learner(dim, weights, cfg);  // keep `weights` for BER reporting
   if (strip > 0.0) learner.strip_hubs(fd, strip);
   learner.seed(fd, sigs);

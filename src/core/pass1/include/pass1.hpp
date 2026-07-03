@@ -60,6 +60,13 @@ class Pass1Learner {
     // it is dropped — spreading shared bits thin (low-degree overlap graph).
     // Tied to α (co-tune); 0 disables separation. See spec §4.1/§7.1.
     double lambda = 0.5;
+    // C-band (identity) emphasis. Per signature the OR-pooled L/R bands carry
+    // hundreds of bits vs C's ~tens, so the surprisal weights alone let context
+    // dominate and atoms cluster by resemblance, not identity — measured BER_C
+    // precision collapses. Scaling the C band's weights (C = [F,2F)) makes
+    // atoms align to token identity (the spec's optional explicit block weight,
+    // §7.5.2). ~20 restores BER_C precision to ~0.95 on Alice; 1 = off.
+    double c_band_boost = 1.0;
     // Cap on the reservoir of under-covered signatures used to re-seed dead
     // codewords (spec §4.4 periodic re-seed).
     std::size_t reseed_pool_cap = 4096;
