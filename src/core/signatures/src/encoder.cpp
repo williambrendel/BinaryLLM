@@ -92,4 +92,59 @@ std::vector<BinaryVecDynamic> encode(
   return out;
 }
 
+std::vector<BinaryVecDynamic> encode_windowed(
+    const core::parts::PartDictionary& dict,
+    std::span<const StreamToken> tokens,
+    std::size_t radius,
+    std::size_t start,
+    std::size_t end) {
+  const std::size_t F = dict.size();
+  const std::size_t dim3 = 3 * F;
+  if (end > tokens.size()) end = tokens.size();
+
+  std::vector<std::size_t> word_idx;
+  if (end > start) word_idx.reserve(end - start);
+  for (std::size_t i = start; i < end; ++i) {
+    if (tokens[i].type == StreamToken::Type::Word) word_idx.push_back(i);
+  }
+  const std::size_t N = word_idx.size();
+
+  std::vector<BinaryVecDynamic> out;
+  out.reserve(N);
+  for (std::size_t i = 0; i < N; ++i) out.emplace_back(dim3);
+  if (N == 0) return out;
+
+  // current band (offset +F).
+  std::vector<std::vector<std::uint32_t>> current(N);
+  for (std::size_t i = 0; i < N; ++i) {
+    const std::string w = core::parts::ascii_lowercase(tokens[word_idx[i]].value);
+    current[i] = encode_word(dict, w);
+    for (std::uint32_t id : current[i]) push_bit(out[i], F + id);
+  }
+
+  // before/after: OR-pool only over a bounded window of `radius` words each side.
+  std::vector<std::uint32_t> acc, merged;
+  auto pool_range = [&](std::size_t lo, std::size_t hi) -> const std::vector<std::uint32_t>& {
+    acc.clear();
+    for (std::size_t j = lo; j < hi; ++j) {
+      merged.clear();
+      std::set_union(acc.begin(), acc.end(), current[j].begin(), current[j].end(),
+                     std::back_inserter(merged));
+      acc.swap(merged);
+    }
+    return acc;
+  };
+  for (std::size_t i = 0; i < N; ++i) {
+    const std::size_t lo = (i > radius) ? i - radius : 0;
+    for (std::uint32_t id : pool_range(lo, i)) push_bit(out[i], id);           // before → [0,F)
+    const std::size_t hi = std::min(N, i + radius + 1);
+    for (std::uint32_t id : pool_range(i + 1, hi)) push_bit(out[i], 2 * F + id);  // after → [2F,3F)
+  }
+
+  for (auto& v : out) {
+    for (auto& chunk : v.chunks) std::sort(chunk.data.begin(), chunk.data.end());
+  }
+  return out;
+}
+
 }  // namespace core::signatures

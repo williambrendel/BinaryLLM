@@ -44,4 +44,17 @@ std::vector<binarycore::binary_vec::BinaryVecDynamic> encode(
     std::size_t start = 0,
     std::size_t end = std::numeric_limits<std::size_t>::max());
 
+// Windowed variant (spec v3.1 Pass-1 §8): the before/after context bands are
+// OR-pooled over a BOUNDED window of `radius` Word tokens each side, instead of
+// the whole [start,end) chunk. Whole-chunk pooling makes contexts near-unique
+// and defeats part discovery; bounded windows yield repeatable sub-contexts.
+// radius==0 → empty L/R bands (identity only). The chunk range [start,end) still
+// defines which words are emitted; the window only bounds the pooling reach.
+std::vector<binarycore::binary_vec::BinaryVecDynamic> encode_windowed(
+    const core::parts::PartDictionary& dict,
+    std::span<const core::parts::StreamToken> tokens,
+    std::size_t radius,
+    std::size_t start = 0,
+    std::size_t end = std::numeric_limits<std::size_t>::max());
+
 }  // namespace core::signatures
