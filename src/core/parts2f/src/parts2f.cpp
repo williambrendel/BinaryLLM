@@ -71,8 +71,9 @@ std::vector<std::uint32_t> grow_part(const Dataset& ds, const Config& cfg, std::
   survivors = ds.inv[seed];  // sorted signature ids containing the seed
   w_last = ds.w[seed];
 
-  std::vector<std::uint32_t> touched;
+  std::vector<std::uint32_t> touched, univ;
   while (p.size() < cfg.D) {
+    const std::size_t Ssz = survivors.size();
     // tally each candidate bit's (survivor count, summed survivor weight)
     touched.clear();
     for (std::uint32_t f : survivors)
@@ -82,24 +83,44 @@ std::vector<std::uint32_t> grow_part(const Dataset& ds, const Config& cfg, std::
           ++cnt[i];
           sumw[i] += weight_of(f);
         }
-    std::sort(touched.begin(), touched.end());  // ascending id → strict-> keeps lowest id on ties
-    const double lS = std::log(static_cast<double>(survivors.size()));
+    std::sort(touched.begin(), touched.end());  // ascending id → keeps lowest id on ties
+
+    // Absorb UNIVERSAL bits (present in every survivor): cs=0, so they add no
+    // discrimination but are part of the recurring unit — a strict win for
+    // reconstruction. Adding them cannot shrink S (S' = S), raises info_content(p)
+    // (hence tightens t0), and does NOT update w_last. Highest-surprisal first, cap D.
+    univ.clear();
+    for (std::uint32_t i : touched)
+      if (cnt[i] == Ssz) univ.push_back(i);
+    std::sort(univ.begin(), univ.end(),
+              [&](std::uint32_t a, std::uint32_t b) {
+                return ds.w[a] > ds.w[b] || (ds.w[a] == ds.w[b] && a < b);
+              });
+    for (std::uint32_t i : univ) {
+      if (p.size() >= cfg.D) break;
+      p.push_back(i);
+      inP[i] = 1;  // S unchanged; w_last unchanged
+    }
+
+    // Pick the best DISCRIMINATIVE bit (cnt < Ssz ⇒ cs>0); universals are now inP.
+    const double lS = std::log(static_cast<double>(Ssz));
     double best = 0.0;
     std::uint32_t bi = kNoBit;
     for (std::uint32_t i : touched) {
-      const double cs = lS - std::log(static_cast<double>(cnt[i]));  // conditional surprisal in W
+      if (inP[i]) continue;  // skip just-absorbed universals (and part bits)
+      const double cs = lS - std::log(static_cast<double>(cnt[i]));
       const double score = cs * sumw[i];
       if (score > best) { best = score; bi = i; }
     }
     for (std::uint32_t i : touched) { cnt[i] = 0; sumw[i] = 0.0; }
-    if (bi == kNoBit) break;  // no positive-score candidate
+    if (bi == kNoBit) break;  // only universals remained
 
     std::vector<std::uint32_t> next = intersect_sorted(survivors, ds.inv[bi]);
-    if (next.size() < cfg.s_min) break;  // test-then-commit rollback: preserve support floor
+    if (next.size() < cfg.s_min) break;  // test-then-commit rollback (universals already absorbed)
     p.push_back(bi);
     inP[bi] = 1;
     survivors.swap(next);
-    w_last = ds.w[bi];  // surprisal of the last KEPT bit
+    w_last = ds.w[bi];  // surprisal of the last KEPT discriminative bit
   }
   for (std::uint32_t i : p) inP[i] = 0;
   std::sort(p.begin(), p.end());

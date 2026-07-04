@@ -74,6 +74,19 @@ TEST_CASE("growth bundles partially co-occurring bits into a multi-bit part") {
   CHECK(p0.support >= cfg.s_min);
 }
 
+TEST_CASE("universal-bit absorb: a perfectly co-occurring clique bundles into one part") {
+  // {0,1,2} appear together in exactly the same 40 signatures (cs=0 for 1,2 within
+  // bit-0's survivors) — must still be bundled via the universal-absorb sweep.
+  std::vector<std::vector<std::uint32_t>> sigs;
+  for (int i = 0; i < 40; ++i) sigs.push_back({0, 1, 2});
+  for (int i = 0; i < 40; ++i) sigs.push_back({static_cast<std::uint32_t>(50 + i)});  // keep w>0
+  Dataset ds = make_ds(std::move(sigs), 100);
+  Config cfg; cfg.variant = 'B'; cfg.s_min = 5; cfg.K_max = 8;
+  auto parts = build_parts(ds, cfg);
+  REQUIRE(!parts.empty());
+  CHECK(parts.front().bits == std::vector<std::uint32_t>{0, 1, 2});  // whole clique, one part
+}
+
 TEST_CASE("t0 prior: closed form 1 − w_last/ic(p), monotone in the last bit's share") {
   Dataset ds = partial_ds(40, 30, 20, 30);
   std::vector<std::uint32_t> p{0, 1, 2};
