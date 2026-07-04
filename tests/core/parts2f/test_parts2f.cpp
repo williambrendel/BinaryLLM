@@ -55,10 +55,23 @@ TEST_CASE("support floor / rollback — no single-signature parts") {
   sigs.push_back({0, 1, 5});  // one lone extra bit
   for (int i = 0; i < 10; ++i) sigs.push_back({static_cast<std::uint32_t>(20 + i)});
   Dataset ds = make_ds(std::move(sigs), 40);
-  Config cfg; cfg.variant = 'B'; cfg.s_min = 5; cfg.K_max = 16;
+  Config cfg; cfg.variant = 'B'; cfg.s_min = 5; cfg.K_max = 16; cfg.c_atom = 0;  // grown layer only
   auto parts = build_parts(ds, cfg);
   REQUIRE(!parts.empty());
   for (const auto& p : parts) CHECK(p.support >= cfg.s_min);  // lone signature never isolated
+}
+
+TEST_CASE("atomic completion (Fix 2): every uncovered bit gets a support-exempt 1-bit atom") {
+  std::vector<std::vector<std::uint32_t>> sigs;
+  for (int i = 0; i < 30; ++i) sigs.push_back({0, 1});
+  sigs.push_back({0, 1, 5});  // bit 5 occurs once — below the support floor, never grown
+  Dataset ds = make_ds(std::move(sigs), 8);
+  Config cfg; cfg.variant = 'B'; cfg.s_min = 5; cfg.K_max = 16; cfg.c_atom = 1;  // atoms on
+  auto parts = build_parts(ds, cfg);
+  bool atom5 = false;
+  for (const auto& p : parts)
+    if (p.bits == std::vector<std::uint32_t>{5}) { atom5 = true; CHECK(p.t_p == doctest::Approx(1.0)); }
+  CHECK(atom5);  // the rare bit is reconstructable via its atom, despite support 1
 }
 
 TEST_CASE("growth bundles partially co-occurring bits into a multi-bit part") {

@@ -45,6 +45,10 @@ struct Config {
   double g_min = 1e-9;         // minimum coverage gain to admit a part (Variant B)
   char variant = 'B';          // 'A' or 'B'
   bool solve_threshold = false;  // Variant B: use the α=1 solver instead of the t0 prior
+  bool global_cov = true;      // Fix 1: global per-bit coverage — a bit covered once is covered
+                               // everywhere; G(p)=info(p\COV); parts become disjoint.
+  std::uint32_t c_atom = 1;    // Fix 2: atomic completion — 1-bit part for every bit c_e>=c_atom
+                               // not already covered (outside K, exempt from admission). 0 disables.
 };
 
 // Prepared 2F sample set: sparse signatures + frozen surprisal + inverted index.
@@ -94,7 +98,8 @@ struct BuildStats {
 // Returns the sorted part; fills `survivors` (exact-AND support) and `w_last`.
 std::vector<std::uint32_t> grow_part(const Dataset& ds, const Config& cfg, std::uint32_t seed,
                                      const std::function<double(std::uint32_t)>& weight_of,
-                                     std::vector<std::uint32_t>& survivors, double& w_last);
+                                     std::vector<std::uint32_t>& survivors, double& w_last,
+                                     const std::vector<char>* blocked = nullptr);
 
 // t0 prior (§3.2): 1 − w_last / info_content(p).
 double t0_prior(const Dataset& ds, const std::vector<std::uint32_t>& part, double w_last);

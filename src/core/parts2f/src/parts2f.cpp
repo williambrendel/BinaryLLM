@@ -60,7 +60,8 @@ double t0_prior(const Dataset& ds, const std::vector<std::uint32_t>& part, doubl
 
 std::vector<std::uint32_t> grow_part(const Dataset& ds, const Config& cfg, std::uint32_t seed,
                                      const std::function<double(std::uint32_t)>& weight_of,
-                                     std::vector<std::uint32_t>& survivors, double& w_last) {
+                                     std::vector<std::uint32_t>& survivors, double& w_last,
+                                     const std::vector<char>* blocked) {
   static thread_local std::vector<double> sumw;
   static thread_local std::vector<std::uint32_t> cnt;
   static thread_local std::vector<char> inP;
@@ -78,7 +79,7 @@ std::vector<std::uint32_t> grow_part(const Dataset& ds, const Config& cfg, std::
     touched.clear();
     for (std::uint32_t f : survivors)
       for (std::uint32_t i : ds.sigs[f])
-        if (!inP[i]) {
+        if (!inP[i] && !(blocked && (*blocked)[i])) {  // skip already-covered bits (global-cov: disjoint parts)
           if (cnt[i] == 0) touched.push_back(i);
           ++cnt[i];
           sumw[i] += weight_of(f);
@@ -140,9 +141,83 @@ static std::vector<std::uint32_t> firing_candidates(const Dataset& ds,
 }
 
 // ---------------------------------------------------------------------------
+// Variant B, GLOBAL coverage (Fix 1) — a bit covered once is covered everywhere.
+// Coverage is a set-cover over the bit universe {0..2F-1}: G(p)=info(p\COV),
+// parts grown from uncovered bits are disjoint by construction. Then Fix 2 emits
+// a 1-bit atom for every still-uncovered bit with c_e>=c_atom (outside K).
+// ---------------------------------------------------------------------------
+static std::vector<Part> build_variant_b_global(const Dataset& ds, const Config& cfg, BuildStats* stats) {
+  const std::size_t N = ds.sigs.size();
+  std::vector<char> COV(ds.dim, 0), retired(ds.dim, 0);
+  std::vector<double> ri(N);
+  for (std::size_t f = 0; f < N; ++f) ri[f] = ds.info(ds.sigs[f]);
+  std::vector<std::uint32_t> active;               // seed-eligible bits (c_e >= s_min)
+  double universe = 0.0;
+  for (std::uint32_t e = 0; e < ds.dim; ++e) {
+    if (ds.c_e[e] >= cfg.s_min) active.push_back(e);
+    if (ds.c_e[e] > 0) universe += ds.w[e];
+  }
+
+  std::vector<Part> parts;
+  double cov_info = 0.0;
+  auto cover_bit = [&](std::uint32_t b) {           // mark b globally covered, update residuals
+    COV[b] = 1; cov_info += ds.w[b];
+    for (std::uint32_t f : ds.inv[b]) ri[f] -= ds.w[b];
+  };
+  while (parts.size() < cfg.K_max) {
+    // seed = rarest uncovered supported bit (max surprisal/bit); its survivors form a tight
+    // cluster that bundles into a wider disjoint part than a common, fan-out seed would.
+    std::uint32_t seed = kNoBit; double best = 0.0;
+    for (std::uint32_t e : active)
+      if (!COV[e] && !retired[e] && ds.w[e] > best) { best = ds.w[e]; seed = e; }
+    if (seed == kNoBit) break;
+
+    std::vector<std::uint32_t> S;
+    double w_last = 0.0;
+    auto weight_of = [&](std::uint32_t f) { return ri[f]; };
+    std::vector<std::uint32_t> p = grow_part(ds, cfg, seed, weight_of, S, w_last, &COV);
+    const double info_p = ds.info(p);               // all p bits are uncovered ⇒ G = info(p)
+    const double t_p = t0_prior(ds, p, w_last);
+
+    RoundStat rs{seed, static_cast<std::uint32_t>(p.size()), static_cast<std::uint32_t>(S.size()),
+                 static_cast<std::uint32_t>(S.size()), t_p, info_p, false};
+    if (info_p > cfg.g_min && t_p < cfg.t_max) {
+      for (std::uint32_t b : p) if (!COV[b]) cover_bit(b);
+      parts.push_back({p, info_p, t_p, static_cast<std::uint32_t>(S.size())});
+      rs.admitted = true;
+    } else {
+      retired[seed] = 1;                            // degenerate; leave uncovered for the atomic pass
+    }
+    if (stats) stats->rounds.push_back(rs);
+  }
+  const std::size_t n_multibit = parts.size();
+  const double multibit_cov = cov_info;
+
+  // Fix 2 — atomic completion basis: a 1-bit atom for EVERY bit with c_e >= c_atom
+  // (not just the residual). Multibit parts give sparse-budget efficiency; atoms
+  // guarantee reconstruction can reach the reachable ceiling, since a disjoint
+  // multibit part fires rarely on unseen contexts. Atoms overlap the multibit layer
+  // but sit outside the K budget (the compression claim is about Φ_K alone).
+  if (cfg.c_atom > 0)
+    for (std::uint32_t e = 0; e < ds.dim; ++e)
+      if (ds.c_e[e] >= cfg.c_atom) {
+        parts.push_back({{e}, ds.w[e], 1.0, static_cast<std::uint32_t>(ds.c_e[e])});
+        if (!COV[e]) cover_bit(e);
+      }
+
+  if (stats) {
+    stats->covered_info = multibit_cov;   // multi-bit coverage (before atoms)
+    stats->total_info = universe;
+  }
+  (void)n_multibit;
+  return parts;
+}
+
+// ---------------------------------------------------------------------------
 // Variant B — greedy submodular set-cover on bit-level residuals (§6).
 // ---------------------------------------------------------------------------
 static std::vector<Part> build_variant_b(const Dataset& ds, const Config& cfg, BuildStats* stats) {
+  if (cfg.global_cov) return build_variant_b_global(ds, cfg, stats);
   const std::size_t N = ds.sigs.size();
   std::vector<std::vector<std::uint32_t>> cov(N);   // covered bits per signature (sorted)
   std::vector<double> ri(N);                         // residual info = info(res_f)
