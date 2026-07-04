@@ -26,6 +26,7 @@
 #include "tokenize.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -118,7 +119,8 @@ int main(int argc, char** argv) {
     if (ds.c_e[e] > 0) { ds.w[e] = std::log(double(Ntr) / double(ds.c_e[e])); ++active; }
   std::cout << "train sigs=" << Ntr << " active_2F_bits=" << active << " test=" << test << "\n";
 
-  auto parts = core::parts2f::build_parts(ds, cfg);
+  core::parts2f::BuildStats stats;
+  auto parts = core::parts2f::build_parts(ds, cfg, &stats);
   std::vector<double> pinfo(parts.size());
   std::vector<std::vector<std::uint32_t>> cwINV(ds.dim);
   double wsum = 0.0;
@@ -138,6 +140,36 @@ int main(int argc, char** argv) {
   for (std::size_t i = 0; i < Ksb; ++i) inSB[mb[i].second] = 1;
   std::cout << "parts=" << parts.size() << " (avg_w=" << (parts.empty() ? 0.0 : wsum / parts.size())
             << ")  single-bit dict=" << Ksb << "\n\n";
+
+  // Fix 4.1/4.2: compression curve (multibit Phi_K vs single-bit baseline) + overlap.
+  {
+    double universe = 0.0;
+    std::vector<double> allw;
+    for (std::size_t e = 0; e < ds.dim; ++e)
+      if (ds.c_e[e] > 0) { universe += ds.w[e]; allw.push_back(ds.w[e]); }
+    std::sort(allw.begin(), allw.end(), std::greater<double>());
+    std::vector<double> g;
+    for (const auto& rr : stats.rounds) if (rr.admitted) g.push_back(rr.signal);
+    auto pf = [&](double fr) -> std::size_t { double run = 0; for (std::size_t i = 0; i < g.size(); ++i) { run += g[i]; if (run >= fr * universe) return i + 1; } return g.size(); };
+    auto bf = [&](double fr) -> std::size_t { double run = 0; for (std::size_t i = 0; i < allw.size(); ++i) { run += allw[i]; if (run >= fr * universe) return i + 1; } return allw.size(); };
+    std::vector<std::uint32_t> ppb(ds.dim, 0);
+    std::size_t mbit = 0, atoms = 0, mbslots = 0, used = 0, shared = 0, mx = 0;
+    for (const auto& p : parts) {
+      if (p.t_p >= 1.0 && p.bits.size() == 1) { ++atoms; continue; }
+      ++mbit; mbslots += p.bits.size();
+      for (std::uint32_t b : p.bits) ++ppb[b];
+    }
+    for (std::size_t e = 0; e < ds.dim; ++e) if (ppb[e]) { ++used; if (ppb[e] >= 2) ++shared; if (ppb[e] > mx) mx = ppb[e]; }
+    std::cout << "compression: " << mbit << " multibit parts (avg_w="
+              << (mbit ? double(mbslots) / mbit : 0.0) << ") + " << atoms << " atoms\n"
+              << "  coverage   parts   baseline_bits   factor\n";
+    for (double fr : {0.5, 0.73, 0.9}) {
+      std::size_t pk = pf(fr), bk = bf(fr);
+      std::printf("    %.2f     %5zu       %6zu         %.2fx\n", fr, pk, bk, pk ? double(bk) / pk : 0.0);
+    }
+    std::printf("  overlap: max parts-per-bit=%zu   bits in >=2 parts=%.1f%%\n\n", mx,
+                used ? 100.0 * shared / used : 0.0);
+  }
 
   auto winfo = [&](std::uint32_t b) { return ds.w[b] > 0.0 ? ds.w[b] : wmax; };
   auto test_sigs = build_sigs(dict, test, radius, F);
@@ -207,6 +239,70 @@ int main(int argc, char** argv) {
     std::printf("  %-8s   %.4f      %.4f        %s\n",
                 Bs[bi] == 999 ? "unlim" : std::to_string(Bs[bi]).c_str(), cp, cs,
                 cp > cs ? "PARTS" : "single");
+  }
+
+  // Fix 4.3: parts vs 1-NN retrieval, split by twin (NN train Jaccard>=0.9) / no-twin.
+  // The no-twin slice is the composition test: do parts reconstruct where retrieval
+  // has no near-exact train context to copy?
+  std::vector<double> trinfo(Ntr);
+  for (std::size_t f = 0; f < Ntr; ++f) trinfo[f] = ds.info(ds.sigs[f]);
+  std::array<std::vector<double>, 2> covPt;
+  for (auto& v : covPt) v.assign(Bs.size(), 0.0);
+  std::array<double, 2> covR{0, 0};
+  std::array<std::size_t, 2> ns{0, 0};
+  const std::size_t rstep = std::max<std::size_t>(1, Nte / 40000);  // sample for the NN search
+  for (std::size_t q = 0; q < Nte; q += rstep) {
+    const Sig& x = test_sigs[q];
+    double xinfo = 0.0;
+    for (std::uint32_t b : x) xinfo += winfo(b);
+    if (xinfo <= 0.0) continue;
+    std::uint32_t rb = x[0];
+    for (std::uint32_t b : x) if (ds.w[b] > ds.w[rb]) rb = b;  // rarest bit
+    double nnJ = 0.0; std::uint32_t nn = static_cast<std::uint32_t>(Ntr);
+    const auto& post = ds.inv[rb];
+    const std::size_t cstep = std::max<std::size_t>(1, post.size() / 3000);
+    for (std::size_t t = 0; t < post.size(); t += cstep) {
+      std::uint32_t o = post[t];
+      double wd = ds.wdot(x, ds.sigs[o]);
+      double J = wd / (xinfo + trinfo[o] - wd);
+      if (J > nnJ) { nnJ = J; nn = o; }
+    }
+    const int sl = nnJ >= 0.9 ? 1 : 0; ++ns[sl];
+    if (nn < Ntr) {
+      double ip = 0.0; const Sig& y = ds.sigs[nn]; std::size_t i = 0, j = 0;
+      while (i < x.size() && j < y.size()) { if (x[i] < y[j]) ++i; else if (y[j] < x[i]) ++j; else { ip += winfo(x[i]); ++i; ++j; } }
+      covR[sl] += ip / xinfo;
+    }
+    std::vector<std::uint32_t> cand;
+    for (std::uint32_t b : x) for (std::uint32_t jj : cwINV[b]) if (!seen[jj]) { seen[jj] = 1; cand.push_back(jj); }
+    std::vector<std::uint32_t> fired;
+    for (std::uint32_t jj : cand) { seen[jj] = 0; if (ds.cont(x, parts[jj].bits, pinfo[jj]) >= parts[jj].t_p) fired.push_back(jj); }
+    std::vector<char> covx, used2;
+    for (std::size_t bi = 0; bi < Bs.size(); ++bi) {
+      const std::size_t B = Bs[bi]; covx.assign(x.size(), 0); used2.assign(fired.size(), 0); double ip = 0.0;
+      for (std::size_t st = 0; st < B && st < fired.size(); ++st) {
+        std::size_t bj = fired.size(); double bg = 0.0; std::vector<std::size_t> bh;
+        for (std::size_t t = 0; t < fired.size(); ++t) {
+          if (used2[t]) continue; double gg = 0.0; std::vector<std::size_t> hit; const auto& pb = parts[fired[t]].bits;
+          std::size_t i = 0, j = 0;
+          while (i < x.size() && j < pb.size()) { if (x[i] < pb[j]) ++i; else if (pb[j] < x[i]) ++j; else { if (!covx[i]) { gg += winfo(x[i]); hit.push_back(i); } ++i; ++j; } }
+          if (gg > bg) { bg = gg; bj = t; bh.swap(hit); }
+        }
+        if (bj == fired.size()) break; used2[bj] = 1; ip += bg; for (std::size_t h : bh) covx[h] = 1;
+      }
+      covPt[sl][bi] += ip / xinfo;
+    }
+  }
+  const std::size_t tot = ns[0] + ns[1];
+  std::printf("\nparts vs 1-NN retrieval (sampled %zu; twin=%.1f%% no-twin=%.1f%%):\n",
+              tot, tot ? 100.0 * ns[1] / tot : 0.0, tot ? 100.0 * ns[0] / tot : 0.0);
+  const char* sn[2] = {"no-twin (composition)", "twin"};
+  for (int sl = 0; sl < 2; ++sl) {
+    if (!ns[sl]) continue;
+    std::printf("  %-22s (%6zu ctx)  retrieval=%.4f  parts@B:", sn[sl], ns[sl], covR[sl] / ns[sl]);
+    for (std::size_t bi = 0; bi < Bs.size(); ++bi)
+      std::printf(" %s=%.3f", Bs[bi] == 999 ? "u" : std::to_string(Bs[bi]).c_str(), covPt[sl][bi] / ns[sl]);
+    std::printf("\n");
   }
   return 0;
 }
